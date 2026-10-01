@@ -4,6 +4,13 @@ All notable changes to Clipman are documented in this file.
 
 ## [Unreleased]
 
+### Added — installer warns about Super+V conflicts (fork)
+
+- `install.sh` warns when another custom shortcut already uses Clipman's
+  key (GNOME would run only one of them) and when another clipboard
+  manager's Shell extension is installed and enabled. It names the
+  culprit and prints the command to fix it, but changes nothing itself.
+
 ### Added — GNOME Shell 51 support
 
 - The Shell extension (v9) now declares support for GNOME Shell 51. The

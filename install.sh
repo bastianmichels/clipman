@@ -88,6 +88,16 @@ else
         echo "  Warning: the extension does not list GNOME Shell $shell_version,"
         echo "  so the Shell may refuse to load it."
     fi
+    # Another clipboard manager would record every copy a second time.
+    while IFS= read -r other_ext; do
+        [ -n "$other_ext" ] || continue
+        # A leftover entry for an extension that was removed is harmless.
+        [ -d "$HOME/.local/share/gnome-shell/extensions/$other_ext" ] ||
+            [ -d "/usr/share/gnome-shell/extensions/$other_ext" ] || continue
+        echo "  Warning: the clipboard extension $other_ext is enabled too. Turn it off:"
+        echo "    gnome-extensions disable $other_ext"
+    done < <(python3 "$HELPER" clipboard-extensions \
+        "$(gsettings get org.gnome.shell enabled-extensions)")
 fi
 
 # Step 4: Install application icon and desktop entry
@@ -172,6 +182,21 @@ print([k for k in keys if k.lower() != '<super>v'])
         gsettings set org.gnome.shell.keybindings toggle-message-tray "$NEW_MSG_TRAY"
         echo "  Removed Super+V from GNOME's message tray shortcut (other keys kept)."
     fi
+
+    # Another custom shortcut on the same key: GNOME runs only one of them.
+    # Say which, but leave the user's shortcut alone.
+    while IFS= read -r other_path; do
+        [ -n "$other_path" ] && [ "$other_path" != "$CLIPMAN_KEY_PATH" ] || continue
+        other_schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$other_path"
+        other_binding=$(gsettings get "$other_schema" binding 2>/dev/null) || continue
+        if python3 "$HELPER" same-accel "$other_binding" "$BINDING"; then
+            other_name=$(gsettings get "$other_schema" name 2>/dev/null || echo "''")
+            echo "  Warning: the shortcut $other_name also uses $BINDING, so it may"
+            echo "  open instead of Clipman. Change it in Settings > Keyboard, or run:"
+            printf '    gsettings set %q binding %q\n' "$other_schema" "''"
+        fi
+    done < <(python3 "$HELPER" strv-lines \
+        "$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings)")
 fi
 
 # Step 6: Install systemd user service (auto-restart on crash)

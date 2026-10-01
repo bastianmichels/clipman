@@ -13,6 +13,9 @@ Usage:
     install_helper.py strv-add LIST ITEM
     install_helper.py strv-remove LIST ITEM
     install_helper.py supports-shell METADATA SHELL_VERSION
+    install_helper.py strv-lines LIST
+    install_helper.py same-accel GVARIANT_ACCEL ACCEL
+    install_helper.py clipboard-extensions LIST
 
 LIST is a string array as `gsettings get` prints it. strv-add and
 strv-remove print the new array in the form `gsettings set` reads.
@@ -102,6 +105,46 @@ def supports_shell(metadata, shell_version):
     return major in json.loads(metadata).get("shell-version", [])
 
 
+# Other clipboard managers' Shell extensions. Two of them record every copy
+# twice and may fight over the clipboard and Super+V.
+CLIPBOARD_EXTENSIONS = frozenset({
+    "clipboard-indicator@tudmotu.com",
+    "copyous@boerdereinar.dev",
+    "pano@elhan.io",
+    "clipboard-history@alexsaveau.dev",
+    "GPaste@gnome-shell-extensions.gnome.org",
+    "gpaste@gnome-shell-extensions.gnome.org",
+})
+
+# GTK spells the Super modifier three ways.
+_MODIFIER_ALIASES = {"mod4": "super", "meta": "super", "primary": "control",
+                     "ctrl": "control"}
+
+
+def normalize_accel(accel):
+    """Return a GTK accelerator in one comparable form: the modifiers
+    lower-cased, aliased and sorted, then the key lower-cased, so that
+    <Super>v, <Mod4>V and <super>v compare equal."""
+    accel = accel.strip()
+    modifiers = []
+    while accel.startswith("<") and ">" in accel:
+        name, accel = accel[1:].split(">", 1)
+        name = name.lower()
+        modifiers.append(_MODIFIER_ALIASES.get(name, name))
+    return "".join(f"<{m}>" for m in sorted(set(modifiers))) + accel.lower()
+
+
+def same_accel(printed, accel):
+    """True if ``printed`` (a value as `gsettings get` prints it) is the
+    same key as ``accel``. An empty or unset binding matches nothing."""
+    printed = printed.strip()
+    try:
+        value = str(ast.literal_eval(printed)) if printed else ""
+    except (ValueError, SyntaxError):
+        value = printed
+    return bool(value) and normalize_accel(value) == normalize_accel(accel)
+
+
 def main(argv):
     command, args = argv[0], argv[1:]
     if command == "check-path":
@@ -128,6 +171,15 @@ def main(argv):
     elif command == "supports-shell":
         with open(args[0], encoding="utf-8") as metadata:
             return 0 if supports_shell(metadata.read(), args[1]) else 1
+    elif command == "strv-lines":
+        for item in parse_strv(args[0]):
+            print(item)
+    elif command == "same-accel":
+        return 0 if same_accel(args[0], args[1]) else 1
+    elif command == "clipboard-extensions":
+        for item in parse_strv(args[0]):
+            if item in CLIPBOARD_EXTENSIONS:
+                print(item)
     else:
         print(f"install_helper.py: unknown command {command!r}", file=sys.stderr)
         return 2

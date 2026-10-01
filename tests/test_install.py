@@ -7,7 +7,9 @@ systemctl, gnome-extensions, gdbus) are stubs; gsettings is the real tool
 with the keyfile backend and small copies of the GNOME schemas.
 """
 
+import contextlib
 import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -87,6 +89,29 @@ class TestSupportsShell(unittest.TestCase):
         for version in ("45.0", "50.1"):
             with self.subTest(version=version):
                 self.assertTrue(helper.supports_shell(metadata, version))
+
+
+class TestShortcutConflicts(unittest.TestCase):
+    def test_same_accel_ignores_case_order_and_aliases(self):
+        for printed in ("'<Super>v'", "'<Mod4>V'", "'<super>v'"):
+            with self.subTest(printed=printed):
+                self.assertTrue(helper.same_accel(printed, "<Super>v"))
+        self.assertTrue(helper.same_accel("'<Shift><Super>v'", "<Super><Shift>v"))
+        self.assertTrue(helper.same_accel("'<Primary>v'", "<Control>v"))
+
+    def test_same_accel_tells_other_keys_apart(self):
+        self.assertFalse(helper.same_accel("'<Super><Shift>v'", "<Super>v"))
+        self.assertFalse(helper.same_accel("'<Super>b'", "<Super>v"))
+        # An unset binding matches nothing.
+        self.assertFalse(helper.same_accel("''", "<Super>v"))
+        self.assertFalse(helper.same_accel("", "<Super>v"))
+
+    def test_lists_only_known_clipboard_extensions(self):
+        enabled = "['dash-to-panel@jderose9.github.com', 'copyous@boerdereinar.dev']"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(helper.main(["clipboard-extensions", enabled]), 0)
+        self.assertEqual(out.getvalue(), "copyous@boerdereinar.dev\n")
 
 
 class TestLauncherQuoting(unittest.TestCase):
@@ -374,6 +399,40 @@ class TestInstallScripts(unittest.TestCase):
             "['<Super>v', '<Super>m']",
         )
         self.assertIn("Keeping your shortcut: <Super><Shift>v", out)
+
+    def test_warns_about_another_shortcut_on_super_v(self):
+        other = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/other/"
+        other_schema = (
+            "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:" + other
+        )
+        self.gset("org.gnome.settings-daemon.plugins.media-keys",
+                  "custom-keybindings", f"['{other}']")
+        self.gset(other_schema, "name", "Clipboard History")
+        self.gset(other_schema, "binding", "<Super>V")
+        out = self.install()
+        self.assertIn("the shortcut 'Clipboard History' also uses <Super>v", out)
+        # The user's shortcut is reported, never changed.
+        self.assertEqual(self.gget(other_schema, "binding"), "'<Super>V'")
+
+    def test_no_shortcut_warning_on_other_keys(self):
+        other = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/other/"
+        other_schema = (
+            "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:" + other
+        )
+        self.gset("org.gnome.settings-daemon.plugins.media-keys",
+                  "custom-keybindings", f"['{other}']")
+        self.gset(other_schema, "binding", "<Super>e")
+        out = self.install()
+        self.assertNotIn("also uses", out)
+
+    def test_warns_about_an_installed_clipboard_extension(self):
+        installed, stale = "copyous@boerdereinar.dev", "clipboard-indicator@tudmotu.com"
+        (self.home / ".local/share/gnome-shell/extensions" / installed).mkdir(parents=True)
+        self.gset("org.gnome.shell", "enabled-extensions", f"['{installed}', '{stale}']")
+        out = self.install()
+        self.assertIn(f"the clipboard extension {installed} is enabled too", out)
+        # Enabled but no longer installed: nothing to turn off.
+        self.assertNotIn(stale, out)
 
     def test_warns_when_the_extension_cannot_load(self):
         self.gset("org.gnome.shell", "disable-user-extensions", "true")
