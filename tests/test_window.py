@@ -457,9 +457,11 @@ class TestWindowConstruction(_WidgetTestCase):
         self.addCleanup(window.set_visible, False)
 
         def pointer(kind):
-            event = MagicMock()
-            event.get_event_type.return_value = kind
-            self.assertFalse(window._on_pointer_event(None, event))
+            # As PyGObject delivers the signal: no event object, the
+            # controller knows the current one.
+            controller = MagicMock()
+            controller.get_current_event.return_value.get_event_type.return_value = kind
+            self.assertFalse(window._on_pointer_event(controller, None))
 
         pointer(Gdk.EventType.BUTTON_PRESS)
         window._on_active_changed()  # the drag starts: focus goes away
@@ -483,7 +485,11 @@ class TestWindowConstruction(_WidgetTestCase):
         for kind in (Gdk.EventType.BUTTON_PRESS, Gdk.EventType.BUTTON_RELEASE):
             event = MagicMock()
             event.get_event_type.return_value = kind
-            window._on_pointer_event(None, event)
+            window._on_pointer_event(MagicMock(), event)
+        # No event at all (nothing current) is ignored, never an error.
+        idle = MagicMock()
+        idle.get_current_event.return_value = None
+        self.assertFalse(window._on_pointer_event(idle, None))
         window._on_active_changed()
         self.assertFalse(window.get_visible())
 

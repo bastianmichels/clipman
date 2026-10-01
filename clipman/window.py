@@ -2803,10 +2803,14 @@ class ClipmanWindow(Adw.ApplicationWindow):
         self._prefs_dialog = None
         self.set_visible(False)
 
-    def _on_pointer_event(self, _controller, event):
+    def _on_pointer_event(self, controller, event):
         """Note whether a mouse button is held down inside the popup.
         Never handles the event."""
-        kind = event.get_event_type()
+        if event is None:
+            # PyGObject hands this signal no event object; the controller
+            # still knows the one it is delivering.
+            event = controller.get_current_event()
+        kind = event.get_event_type() if event is not None else None
         if kind == Gdk.EventType.BUTTON_PRESS:
             self._button_down = True
         elif kind == Gdk.EventType.BUTTON_RELEASE:
