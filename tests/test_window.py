@@ -29,7 +29,7 @@ try:
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, Gdk, Gio  # noqa: F401
+    from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: F401
     _HAS_GTK = True
 except (ImportError, ValueError, AttributeError, RuntimeError):
     # ImportError: pygobject / gi missing on the runner.
@@ -41,6 +41,7 @@ except (ImportError, ValueError, AttributeError, RuntimeError):
     _HAS_GTK = False
     Adw = None  # type: ignore[assignment]
     Gio = None  # type: ignore[assignment]
+    Gtk = None  # type: ignore[assignment]
 
 _ADW_INIT_OK = False
 if _HAS_GTK:
@@ -1197,6 +1198,23 @@ class TestWindowConstruction(_WidgetTestCase):
         # And the value persisted to the DB as a stringified int.
         self.assertEqual(db.get_setting("font_size"), "14")
 
+    def test_preview_height_slider_saves_and_notifies(self):
+        from clipman.preferences import ClipmanPreferences
+
+        db = self._make_db()
+        db.set_setting("thumbnail_height", "240")
+        received = []
+        prefs = ClipmanPreferences(
+            db, None, on_setting_changed=lambda k, v: received.append((k, v)))
+
+        scale = prefs._thumb_scale
+        self.assertEqual(scale.get_value(), 240)
+        adj = scale.get_adjustment()
+        self.assertEqual((adj.get_lower(), adj.get_upper()), (80, 400))
+        scale.set_value(300)
+        self.assertIn(("thumbnail_height", 300), received)
+        self.assertEqual(db.get_setting("thumbnail_height"), "300")
+
     def test_save_stores_bools_lowercase(self):
         """_save persists Python bools as lowercase 'true'/'false'.
 
@@ -1335,54 +1353,6 @@ class TestWindowConstruction(_WidgetTestCase):
         self.assertIn(
             "definitely-not-an-action", warning_messages[0]
         )
-
-    def test_thumbnail_texture_decodes_at_scale_not_full_res(self):
-        """A large stored image yields a bounded-size thumbnail texture.
-
-        Regression for the perf bug where the image-row thumbnail decoded
-        the FULL-resolution stored screenshot into a GPU texture on every
-        history refresh, then shrank it. The fix decodes-and-scales at
-        load, so the resulting texture must be far smaller than the
-        1600x1200 source — bounded by the requested oversampled box, not
-        the source dimensions.
-        """
-        from gi.repository import GdkPixbuf
-
-        from clipman.window import ClipmanWindow
-
-        # Build a real 1600x1200 PNG in memory (no alpha needed).
-        big = GdkPixbuf.Pixbuf.new(
-            GdkPixbuf.Colorspace.RGB, False, 8, 1600, 1200
-        )
-        big.fill(0x3366FFFF)  # solid blue; RGBA packed
-        ok, png_bytes = big.save_to_bufferv("png", [], [])
-        self.assertTrue(ok, "failed to encode source PNG")
-
-        db = self._make_db()
-        entry_id = db.add_entry("image", image_data=bytes(png_bytes))
-        self.assertIsNotNone(entry_id)
-
-        app = self._make_app("com.clipman.TestThumb")
-        window = ClipmanWindow(application=app, db=db, monitor=None)
-
-        # Grab the stored path the same way _bind_entry_row does.
-        entry = db.get_entries(limit=1)[0]
-        size = 48
-        texture = window._thumbnail_texture(entry["image_path"], size=size)
-        self.assertIsNotNone(texture, "expected a Gdk.Texture thumbnail")
-
-        iw = texture.get_width()
-        ih = texture.get_height()
-
-        # The oversampled decode box: size * scale_factor * 2 (COVER
-        # headroom). Even at a large HiDPI scale this stays well under
-        # the 1600x1200 source — proving we no longer decode full-res.
-        scale = max(1, window.get_scale_factor())
-        box = size * scale * 2
-        self.assertLessEqual(iw, box)
-        self.assertLessEqual(ih, box)
-        self.assertLess(iw, 1600)
-        self.assertLess(ih, 1200)
 
     def test_search_changed_debounces_refresh(self):
         """Typing must NOT rebuild the list synchronously per keystroke.
@@ -1795,6 +1765,109 @@ class _FakeListItem:
 
     def set_accessible_description(self, description):
         self.description = description
+
+
+class TestImagePreviews(_WidgetTestCase):
+    """Image rows show the picture itself, at the height from Preferences."""
+
+    def _png(self, w, h):
+        from gi.repository import GdkPixbuf
+
+        pixbuf = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, w, h)
+        pixbuf.fill(0x3366FFFF)
+        ok, data = pixbuf.save_to_bufferv("png", [], [])
+        self.assertTrue(ok)
+        return bytes(data)
+
+    def _row_for(self, window, entry):
+        from clipman.window import ClipItem
+
+        list_item = _FakeListItem(ClipItem(entry, "entry"))
+        window._row_setup(None, list_item)
+        window._row_bind(None, list_item)
+        return list_item.child
+
+    def _wait_for(self, predicate, timeout=5.0):
+        import time
+
+        from gi.repository import GLib
+
+        context = GLib.MainContext.default()
+        end = time.monotonic() + timeout
+        while time.monotonic() < end and not predicate():
+            context.iteration(False)
+            time.sleep(0.005)
+        return predicate()
+
+    @staticmethod
+    def _height(thumb):
+        """(minimum, natural) height without the margin above it."""
+        lo, nat = thumb.measure(Gtk.Orientation.VERTICAL, -1)[:2]
+        return lo - thumb.get_margin_top(), nat - thumb.get_margin_top()
+
+    def _window(self, db):
+        from clipman.window import ClipmanWindow
+
+        app = self._make_app("com.clipman.TestPreviews")
+        return ClipmanWindow(application=app, db=db, monitor=None)
+
+    def test_image_row_shows_a_preview_at_the_chosen_height(self):
+        db = self._make_db()
+        db.set_setting("thumbnail_height", "200")
+        db.add_entry("image", image_data=self._png(1600, 1200))
+        window = self._window(db)
+        row = self._row_for(window, db.get_entries()[0])
+        thumb = row._clip_thumb
+        self.assertTrue(thumb.get_visible())
+        # The height is held while the picture decodes: no jump.
+        self.assertEqual(thumb.height, 200)
+        self.assertEqual(self._height(thumb), (200, 200))
+        self.assertTrue(self._wait_for(lambda: thumb.get_paintable() is not None))
+        texture = thumb.get_paintable()
+        # Decoded at the target size, never at full resolution.
+        scale = max(1, window.get_scale_factor())
+        self.assertEqual(texture.get_height(), 200 * scale)
+        self.assertAlmostEqual(texture.get_width(), 200 * scale * 4 / 3, delta=1)
+        # As wide as the aspect ratio asks (±1 px rounding), still exactly
+        # 200 px high.
+        self.assertAlmostEqual(
+            thumb.measure(Gtk.Orientation.HORIZONTAL, -1)[1], 200 * 4 / 3, delta=1)
+        self.assertEqual(self._height(thumb), (200, 200))
+
+    def test_text_rows_have_no_preview(self):
+        db = self._make_db()
+        db.add_entry("text", content_text="hello")
+        window = self._window(db)
+        row = self._row_for(window, db.get_entries()[0])
+        self.assertFalse(row._clip_thumb.get_visible())
+
+    def test_sensitive_image_shows_no_preview(self):
+        db = self._make_db()
+        db.add_entry("image", image_data=self._png(10, 10), sensitive=True)
+        window = self._window(db)
+        row = self._row_for(window, db.get_entries()[0])
+        self.assertFalse(row._clip_thumb.get_visible())
+
+    def test_new_height_applies_at_once(self):
+        db = self._make_db()
+        db.add_entry("image", image_data=self._png(40, 30))
+        window = self._window(db)
+        window.refresh()
+        self.assertEqual(window._thumb_height, 120)
+        db.set_setting("thumbnail_height", "300")
+        window._on_setting_changed("thumbnail_height", 300)
+        self.assertEqual(window._thumb_height, 300)
+        # Rebinding is debounced; it runs once the slider rests.
+        self.assertTrue(self._wait_for(lambda: window._thumb_rebind_id == 0))
+        row = self._row_for(window, db.get_entries()[0])
+        self.assertEqual(row._clip_thumb.height, 300)
+
+    def test_out_of_range_heights_are_clamped(self):
+        from clipman import thumbnails
+
+        self.assertEqual(thumbnails.clamp_height("10"), 80)
+        self.assertEqual(thumbnails.clamp_height(9999), 400)
+        self.assertEqual(thumbnails.clamp_height("junk"), thumbnails.DEFAULT_HEIGHT)
 
 
 class TestAccessibleNames(_WidgetTestCase):

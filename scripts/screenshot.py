@@ -27,6 +27,17 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 
+def _sample_png():
+    """A 480x300 two-tone picture, so shots show an image row's preview."""
+    from gi.repository import GdkPixbuf
+
+    pixbuf = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 480, 300)
+    pixbuf.fill(0x89B4FAFF)
+    pixbuf.new_subpixbuf(0, 180, 480, 120).fill(0xA6E3A1FF)
+    ok, data = pixbuf.save_to_bufferv("png", [], [])
+    return bytes(data) if ok else None
+
+
 def _seed(db):
     db.add_entry("text", "https://github.com/MohammedEl-sayedAhmed/clipman")
     db.add_entry("text", "The quick brown fox jumps over the lazy dog.")
@@ -35,6 +46,7 @@ def _seed(db):
         "def hello():\n    print('a longer multi-line snippet of code')\n    return 42",
     )
     db.add_entry("text", "short note")
+    db.add_entry("image", image_data=_sample_png())
     db.add_entry("text", "another clipboard entry with some length to it")
     db.add_snippet("Signature", "Best regards,\nMohammed")
 

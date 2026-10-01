@@ -22,8 +22,8 @@ categories of message:
    logical Python type, e.g. ``bool``, ``int``, ``float``, ``str``).
    Today's keys: ``theme``, ``font_color``, ``opacity``, ``font_size``,
    ``show_count_badges``, ``incognito_on_launch``, ``sensitive_timeout``,
-   ``paste_mode``, ``max_entries``. Listeners hot-reload CSS / theme /
-   paste behaviour off these.
+   ``paste_mode``, ``max_entries``, ``thumbnail_height``. Listeners
+   hot-reload CSS / theme / paste behaviour off these.
 
 2. Synthetic UI events — ``key`` is one of the strings in
    ``EVENT_KEYS`` and ``value`` carries an event-specific payload
@@ -46,6 +46,7 @@ import gi
 from gettext import gettext as _
 
 import clipman.keybindings as keybindings
+import clipman.thumbnails as thumbnails
 import clipman.updates as updates
 from clipman._version import __version__
 from clipman import database
@@ -441,6 +442,29 @@ class ClipmanPreferences(Adw.Dialog):
             lambda r, _p: self._save("font_size", int(r.get_value())),
         )
         layout_group.add(font_row)
+
+        thumb_row = Adw.ActionRow()
+        thumb_row.set_title(_("Image preview height"))
+        thumb_row.set_subtitle(_("Height of image previews in the list."))
+        low, high = thumbnails.HEIGHT_RANGE
+        thumb_scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, low, high, 10)
+        thumb_scale.set_value(thumbnails.clamp_height(self.db.get_setting(
+            "thumbnail_height", str(thumbnails.DEFAULT_HEIGHT))))
+        thumb_scale.set_draw_value(True)
+        thumb_scale.set_value_pos(Gtk.PositionType.LEFT)
+        thumb_scale.set_digits(0)
+        thumb_scale.set_hexpand(True)
+        thumb_scale.set_size_request(180, -1)
+        thumb_scale.update_property(
+            [Gtk.AccessibleProperty.LABEL], [_("Image preview height")])
+        thumb_scale.connect(
+            "value-changed",
+            lambda sc: self._save("thumbnail_height", int(sc.get_value())),
+        )
+        thumb_row.add_suffix(thumb_scale)
+        self._thumb_scale = thumb_scale
+        layout_group.add(thumb_row)
 
         badges_row = Adw.SwitchRow()
         badges_row.set_title(_("Show count badges on filter tabs"))

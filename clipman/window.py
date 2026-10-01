@@ -22,6 +22,7 @@ import gi
 # CodeQL flags as a cyclic import (window <-> clipman package).
 from gettext import gettext as _
 
+import clipman.thumbnails as thumbnails
 import clipman.updates as updates
 from clipman._version import __version__
 
@@ -266,6 +267,36 @@ _SENSITIVE_MASK = "•" * 13
 _IMG_INFO_MISS = object()
 
 
+class _Preview(Gtk.Picture):
+    """An image row's preview: exactly ``height`` logical px tall, as wide
+    as the image's aspect ratio asks, and narrower when the row is.
+
+    A plain Gtk.Picture asks for the texture's pixel size, which on a
+    HiDPI screen is twice the height the user picked. The height is kept
+    while the texture is still decoding, so rows never jump.
+    """
+
+    __gtype_name__ = "ClipmanPreview"
+
+    def __init__(self):
+        super().__init__()
+        self.height = thumbnails.DEFAULT_HEIGHT
+        self.set_can_shrink(True)
+        self.set_content_fit(Gtk.ContentFit.CONTAIN)
+
+    def set_height(self, height):
+        if height != self.height:
+            self.height = height
+            self.queue_resize()
+
+    def do_measure(self, orientation, _for_size):
+        if orientation == Gtk.Orientation.VERTICAL:
+            return self.height, self.height, -1, -1
+        paintable = self.get_paintable()
+        ratio = paintable.get_intrinsic_aspect_ratio() if paintable else 0
+        return 0, int(self.height * (ratio or 1)), -1, -1
+
+
 class ClipItem(GObject.Object):
     """A GObject wrapper around one history entry or snippet dict so it can
     live in a ``Gio.ListStore`` and feed ``Gtk.ListView``.
@@ -325,10 +356,16 @@ class ClipmanWindow(Adw.ApplicationWindow):
         # fast and stays responsive instead of freezing to build every row.
         self._fill_id = 0
         self._fill_rest = []
-        # Decoded image thumbnails, keyed by their content-addressed path
-        # (hash.png, immutable). Without this every refresh re-decoded every
-        # image thumbnail — brutal for an image-heavy history.
-        self._thumb_cache = {}
+        # Image previews, decoded off the main thread and cached per size
+        # (clipman/thumbnails.py). Thumbnails of deleted images go at start.
+        self._thumbs = thumbnails.ThumbnailCache()
+        self._thumb_height = thumbnails.clamp_height(
+            self.db.get_setting("thumbnail_height",
+                                str(thumbnails.DEFAULT_HEIGHT)))
+        self._thumb_px = 0  # device px of the size in use; 0 = none yet
+        self._thumb_rebind_id = 0
+        from clipman.database import IMAGES_DIR
+        self._thumbs.reap(IMAGES_DIR)
         # (bytes, w, h) per image path for the row meta line — header sniff
         # only, cached because paths are content-addressed/immutable.
         self._img_info_cache = {}
@@ -1341,61 +1378,41 @@ class ClipmanWindow(Adw.ApplicationWindow):
         except OSError:
             logger.debug("xdg-open failed for %s", path, exc_info=True)
 
-    def _thumbnail_texture(self, image_path, size=48):
-        """Decode a stored image to a small, HiDPI-crisp ``Gdk.Texture``.
-
-        Decodes-and-scales the PNG at load time via
-        ``GdkPixbuf.new_from_file_at_scale`` (not a full-res decode then
-        shrink). The decode target is oversized by the widget scale factor
-        (HiDPI sharpness) and by 2x (COVER-crop headroom). Returns a
-        ``Gdk.Texture``, or ``None`` when the path is unsafe, missing, or
-        undecodable.
-        """
+    def _bind_preview(self, row, image_path):
+        """Show the image's preview in ``row``: at once when it is cached,
+        else as soon as a worker has decoded it."""
         from clipman.database import _safe_image_path
 
+        thumb = row._clip_thumb
+        thumb.set_height(self._thumb_height)
+        thumb.set_visible(True)
         if not image_path or not _safe_image_path(image_path):
-            return None
+            thumb.set_paintable(None)
+            return
+        # Decode at device resolution so HiDPI previews stay sharp.
+        px = self._thumb_height * max(1, self.get_scale_factor())
+        if px != self._thumb_px:
+            self._thumb_px = px
+            self._thumbs.set_height(px)
 
-        # Content-addressed path -> immutable image, so cache the decoded
-        # texture and never decode the same thumbnail twice.
-        cache_key = (image_path, size)
-        cached = self._thumb_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        def _ready(texture):
+            # The row may show another clip by now (recycled on scroll).
+            item = row._clip_item
+            if (item is not None and item.kind == "entry"
+                    and item.data.get("image_path") == image_path
+                    and row._clip_thumb.height * max(1, self.get_scale_factor()) == px):
+                row._clip_thumb.set_paintable(texture)
 
-        # Oversample: logical px * device scale * COVER-crop headroom.
-        scale = max(1, self.get_scale_factor())
-        box = size * scale * 2
-        try:
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                image_path, box, box, True
-            )
-            # Gdk.Texture.new_for_pixbuf is deprecated since GTK 4.12;
-            # build the texture from the pixbuf's raw bytes instead.
-            fmt = (
-                Gdk.MemoryFormat.R8G8B8A8
-                if pixbuf.get_has_alpha()
-                else Gdk.MemoryFormat.R8G8B8
-            )
-            texture = Gdk.MemoryTexture.new(
-                pixbuf.get_width(),
-                pixbuf.get_height(),
-                fmt,
-                pixbuf.read_pixel_bytes(),
-                pixbuf.get_rowstride(),
-            )
-        except Exception:
-            # Corrupt file or unsupported format — fall back to the type
-            # icon rather than crashing.
-            logger.debug("thumbnail failed for %r", image_path, exc_info=True)
-            return None
+        thumb.set_paintable(self._thumbs.lookup(image_path, px, _ready))
 
-        # Bound the cache so a long session can't grow it without limit
-        # (history itself is capped at MAX_ENTRIES). Simple FIFO eviction.
-        if len(self._thumb_cache) >= 256:
-            self._thumb_cache.pop(next(iter(self._thumb_cache)), None)
-        self._thumb_cache[cache_key] = texture
-        return texture
+    def _rebind_rows(self):
+        """Debounced: rebind every row, so a new preview height shows at
+        once without reloading the history."""
+        self._thumb_rebind_id = 0
+        n = self._store.get_n_items()
+        if n:
+            self._store.items_changed(0, n, n)
+        return GLib.SOURCE_REMOVE
 
     # ------------------------------------------------------------------
     # ListView factory: build each visible row once, rebind on recycle
@@ -1429,18 +1446,6 @@ class ClipmanWindow(Adw.ApplicationWindow):
         tile.append(icon)
         row.append(tile)
 
-        thumb = Gtk.Picture()
-        thumb.set_can_shrink(True)
-        thumb.set_content_fit(Gtk.ContentFit.COVER)
-        thumb.set_size_request(48, 48)
-        thumb.set_valign(Gtk.Align.CENTER)
-        thumb.add_css_class("clip-thumb")
-        # CSS border-radius rounds the widget's background, not the
-        # painted picture — clip the content too or corners stay square.
-        thumb.set_overflow(Gtk.Overflow.HIDDEN)
-        thumb.set_visible(False)
-        row.append(thumb)
-
         text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         text_box.set_valign(Gtk.Align.CENTER)
         text_box.set_hexpand(True)
@@ -1452,6 +1457,17 @@ class ClipmanWindow(Adw.ApplicationWindow):
         subtitle.add_css_class("subtitle")
         text_box.append(title)
         text_box.append(subtitle)
+        # Image rows show the picture itself under the meta line, at the
+        # height picked in Preferences.
+        thumb = _Preview()
+        thumb.set_halign(Gtk.Align.START)
+        thumb.set_margin_top(6)
+        thumb.add_css_class("clip-thumb")
+        # CSS border-radius rounds the widget's background, not the
+        # painted picture — clip the content too or corners stay square.
+        thumb.set_overflow(Gtk.Overflow.HIDDEN)
+        thumb.set_visible(False)
+        text_box.append(thumb)
         row.append(text_box)
 
         # Actions sit in a box that fades in on row hover (always shown for
@@ -1632,22 +1648,20 @@ class ClipmanWindow(Adw.ApplicationWindow):
             row._clip_title.set_text(title)
         row._clip_subtitle.set_text(subtitle)
 
-        # --- leading visual: thumbnail or coloured tile ------------------
-        texture = (
-            self._thumbnail_texture(entry.get("image_path"))
-            if ctype == "image" and not sensitive else None
-        )
-        if texture is not None:
-            row._clip_thumb.set_paintable(texture)
-            row._clip_thumb.set_visible(True)
-            row._clip_tile.set_visible(False)
+        # --- leading tile, and the preview of an image -----------------
+        self._set_tile(row, rtype)
+        if sensitive:
+            # Lock icon in the type-coloured tile (mockup is-sensitive).
+            row._clip_icon.set_from_icon_name("dialog-password-symbolic")
+        # A tall preview row keeps its tile beside the title, not centred.
+        row._clip_tile.set_valign(
+            Gtk.Align.START if ctype == "image" and not sensitive
+            else Gtk.Align.CENTER)
+        if ctype == "image" and not sensitive:
+            self._bind_preview(row, entry.get("image_path"))
         else:
             row._clip_thumb.set_paintable(None)
             row._clip_thumb.set_visible(False)
-            self._set_tile(row, rtype)
-            if sensitive:
-                # Lock icon in the type-coloured tile (mockup is-sensitive).
-                row._clip_icon.set_from_icon_name("dialog-password-symbolic")
 
         row._clip_pin.set_icon_name(
             "starred-symbolic" if pinned else "non-starred-symbolic"
@@ -2288,6 +2302,12 @@ class ClipmanWindow(Adw.ApplicationWindow):
                 self._sensitive_timeout = max(10, min(300, int(value)))
             except (TypeError, ValueError):
                 self._sensitive_timeout = DEFAULT_SENSITIVE_TIMEOUT
+        elif key == "thumbnail_height":
+            self._thumb_height = thumbnails.clamp_height(value)
+            # The slider fires on every step; rebind once it rests.
+            if self._thumb_rebind_id:
+                GLib.source_remove(self._thumb_rebind_id)
+            self._thumb_rebind_id = GLib.timeout_add(80, self._rebind_rows)
         elif key == "max_entries":
             # A lower cap applies now, not at the next copy.
             self.db.enforce_max_entries()

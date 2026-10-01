@@ -4,6 +4,17 @@ All notable changes to Clipman are documented in this file.
 
 ## [Unreleased]
 
+### Added — image previews in the list (fork)
+
+- Image rows show the picture itself under the meta line instead of a
+  48 px tile, at a height set with a new slider in Preferences →
+  Appearance (80–400 px, default 120). A new height applies at once.
+- Previews are decoded in background threads and cached per size in
+  `$XDG_CACHE_HOME/clipman/thumbnails/<px>/` (folders 0700, files
+  0600). Picking another size deletes the old ones; thumbnails of
+  deleted images are removed at start-up. The row keeps its height
+  while the preview decodes, so the list never jumps.
+
 ### Changed — History / Pinned tabs, 50-entry default (fork)
 
 - The popup's tabs are now History, Pinned and Snippets; the Text and
