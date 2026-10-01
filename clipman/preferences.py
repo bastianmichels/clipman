@@ -22,8 +22,9 @@ categories of message:
    logical Python type, e.g. ``bool``, ``int``, ``float``, ``str``).
    Today's keys: ``theme``, ``font_color``, ``opacity``, ``font_size``,
    ``show_count_badges``, ``incognito_on_launch``, ``sensitive_timeout``,
-   ``paste_mode``, ``max_entries``, ``thumbnail_height``. Listeners
-   hot-reload CSS / theme / paste behaviour off these.
+   ``paste_mode``, ``max_entries``, ``thumbnail_height``,
+   ``preview_lines``. Listeners hot-reload CSS / theme / paste
+   behaviour off these.
 
 2. Synthetic UI events — ``key`` is one of the strings in
    ``EVENT_KEYS`` and ``value`` carries an event-specific payload
@@ -442,6 +443,17 @@ class ClipmanPreferences(Adw.Dialog):
             lambda r, _p: self._save("font_size", int(r.get_value())),
         )
         layout_group.add(font_row)
+
+        lines_row = Adw.SpinRow.new_with_range(1, 3, 1)
+        lines_row.set_title(_("Text preview lines"))
+        lines_row.set_subtitle(_("How many lines of a text clip the list shows."))
+        lines_row.set_value(self._get_int("preview_lines", 2))
+        lines_row.connect(
+            "notify::value",
+            lambda r, _p: self._save("preview_lines", int(r.get_value())),
+        )
+        layout_group.add(lines_row)
+        self._lines_row = lines_row
 
         thumb_row = Adw.ActionRow()
         thumb_row.set_title(_("Image preview height"))

@@ -4,6 +4,13 @@ All notable changes to Clipman are documented in this file.
 
 ## [Unreleased]
 
+### Added — 1 to 3 preview lines for text clips (fork)
+
+- Text rows show the first 1, 2 or 3 non-blank lines of a clip (new
+  Preferences → Appearance row, default 2); a long line wraps onto the
+  next and the last one ends in an ellipsis. Sensitive, image and
+  snippet rows stay one line. A long clip never widens the popup.
+
 ### Added — image previews in the list (fork)
 
 - Image rows show the picture itself under the meta line instead of a

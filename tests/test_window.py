@@ -1215,6 +1215,18 @@ class TestWindowConstruction(_WidgetTestCase):
         self.assertIn(("thumbnail_height", 300), received)
         self.assertEqual(db.get_setting("thumbnail_height"), "300")
 
+    def test_preview_lines_row_saves(self):
+        from clipman.preferences import ClipmanPreferences
+
+        db = self._make_db()
+        received = []
+        prefs = ClipmanPreferences(
+            db, None, on_setting_changed=lambda k, v: received.append((k, v)))
+        self.assertEqual(prefs._lines_row.get_value(), 2)
+        prefs._lines_row.set_value(3)
+        self.assertIn(("preview_lines", 3), received)
+        self.assertEqual(db.get_setting("preview_lines"), "3")
+
     def test_save_stores_bools_lowercase(self):
         """_save persists Python bools as lowercase 'true'/'false'.
 
@@ -1767,8 +1779,8 @@ class _FakeListItem:
         self.description = description
 
 
-class TestImagePreviews(_WidgetTestCase):
-    """Image rows show the picture itself, at the height from Preferences."""
+class _RowTestCase(_WidgetTestCase):
+    """Builds list rows the way the list factory does."""
 
     def _png(self, w, h):
         from gi.repository import GdkPixbuf
@@ -1810,6 +1822,11 @@ class TestImagePreviews(_WidgetTestCase):
 
         app = self._make_app("com.clipman.TestPreviews")
         return ClipmanWindow(application=app, db=db, monitor=None)
+
+
+
+class TestImagePreviews(_RowTestCase):
+    """Image rows show the picture itself, at the height from Preferences."""
 
     def test_image_row_shows_a_preview_at_the_chosen_height(self):
         db = self._make_db()
@@ -1868,6 +1885,63 @@ class TestImagePreviews(_WidgetTestCase):
         self.assertEqual(thumbnails.clamp_height("10"), 80)
         self.assertEqual(thumbnails.clamp_height(9999), 400)
         self.assertEqual(thumbnails.clamp_height("junk"), thumbnails.DEFAULT_HEIGHT)
+
+
+class TestPreviewLines(_RowTestCase):
+    """Text rows show 1 to 3 lines, set in Preferences."""
+
+    def test_preview_text_takes_the_first_non_blank_lines(self):
+        from clipman.window import _preview_text
+
+        text = "\n  first  \n\n second\nthird\nfourth"
+        self.assertEqual(_preview_text(text, 1), "first")
+        self.assertEqual(_preview_text(text, 2), "first\nsecond")
+        self.assertEqual(_preview_text(text, 3), "first\nsecond\nthird")
+        self.assertEqual(_preview_text(" \n\t", 3), "")
+        self.assertEqual(_preview_text("x" * 500, 2), "x" * 120)
+        # Only the start of a huge clip is read.
+        huge = "line\n" * 2_000_000
+        self.assertEqual(_preview_text(huge, 3), "line\nline\nline")
+
+    def test_line_count_is_clamped(self):
+        from clipman.window import DEFAULT_PREVIEW_LINES, _clamp_preview_lines
+
+        self.assertEqual(_clamp_preview_lines("0"), 1)
+        self.assertEqual(_clamp_preview_lines(7), 3)
+        self.assertEqual(_clamp_preview_lines("junk"), DEFAULT_PREVIEW_LINES)
+
+    def test_rows_use_the_setting(self):
+        db = self._make_db()
+        db.set_setting("preview_lines", "3")
+        db.add_entry("text", content_text="a\nb\nc\nd")
+        window = self._window(db)
+        row = self._row_for(window, db.get_entries()[0])
+        self.assertEqual(row._clip_title.get_lines(), 3)
+        self.assertEqual(row._clip_title.get_text(), "a\nb\nc")
+
+        db.set_setting("preview_lines", "1")
+        window._on_setting_changed("preview_lines", 1)
+        self.assertTrue(self._wait_for(lambda: window._thumb_rebind_id == 0))
+        row = self._row_for(window, db.get_entries()[0])
+        self.assertEqual(row._clip_title.get_lines(), 1)
+        self.assertEqual(row._clip_title.get_text(), "a")
+
+    def test_sensitive_and_image_rows_stay_one_line(self):
+        db = self._make_db()
+        db.add_entry("text", content_text="secret\nmore", sensitive=True)
+        db.add_entry("image", image_data=self._png(10, 10))
+        window = self._window(db)
+        for entry in db.get_entries():
+            row = self._row_for(window, entry)
+            self.assertEqual(row._clip_title.get_lines(), 1)
+
+    def test_long_clip_does_not_widen_the_popup(self):
+        db = self._make_db()
+        db.add_entry("text", content_text="word " * 400)
+        window = self._window(db)
+        row = self._row_for(window, db.get_entries()[0])
+        natural = row._clip_title.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+        self.assertLess(natural, 100)
 
 
 class TestAccessibleNames(_WidgetTestCase):

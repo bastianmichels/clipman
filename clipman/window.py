@@ -249,6 +249,34 @@ def _first_line(text):
     return text[start:end if end != -1 else start + 121].strip()
 
 
+# Text rows preview this many lines (Preferences: 1 to 3).
+PREVIEW_LINES_RANGE = (1, 3)
+DEFAULT_PREVIEW_LINES = 2
+
+
+def _clamp_preview_lines(value):
+    try:
+        lines = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_PREVIEW_LINES
+    low, high = PREVIEW_LINES_RANGE
+    return min(max(lines, low), high)
+
+
+def _preview_text(text, lines):
+    """The first ``lines`` non-blank lines of ``text``, stripped, each at
+    most 120 characters. Only the start of the clip is scanned: a clip
+    can be megabytes long."""
+    if lines <= 1:
+        return _first_line(text)
+    match = _NON_SPACE.search(text or "")
+    if match is None:
+        return ""
+    head = text[match.start():match.start() + 4096]
+    kept = [line.strip()[:120] for line in head.split("\n") if line.strip()]
+    return "\n".join(kept[:lines])
+
+
 def _format_bytes(n):
     """Short human size for the image row meta ("1.2 MB", "640 KB")."""
     if n >= 1024 * 1024:
@@ -363,6 +391,8 @@ class ClipmanWindow(Adw.ApplicationWindow):
             self.db.get_setting("thumbnail_height",
                                 str(thumbnails.DEFAULT_HEIGHT)))
         self._thumb_px = 0  # device px of the size in use; 0 = none yet
+        self._preview_lines = _clamp_preview_lines(
+            self.db.get_setting("preview_lines", str(DEFAULT_PREVIEW_LINES)))
         self._thumb_rebind_id = 0
         from clipman.database import IMAGES_DIR
         self._thumbs.reap(IMAGES_DIR)
@@ -1405,9 +1435,16 @@ class ClipmanWindow(Adw.ApplicationWindow):
 
         thumb.set_paintable(self._thumbs.lookup(image_path, px, _ready))
 
+    def _queue_rebind(self):
+        """Rebind the rows soon. A slider fires on every step; this waits
+        until it rests."""
+        if self._thumb_rebind_id:
+            GLib.source_remove(self._thumb_rebind_id)
+        self._thumb_rebind_id = GLib.timeout_add(80, self._rebind_rows)
+
     def _rebind_rows(self):
-        """Debounced: rebind every row, so a new preview height shows at
-        once without reloading the history."""
+        """Debounced: rebind every row, so a new preview height or line
+        count shows at once without reloading the history."""
         self._thumb_rebind_id = 0
         n = self._store.get_n_items()
         if n:
@@ -1451,6 +1488,14 @@ class ClipmanWindow(Adw.ApplicationWindow):
         text_box.set_hexpand(True)
         title = Gtk.Label(xalign=0)
         title.set_ellipsize(Pango.EllipsizeMode.END)
+        # Up to N lines (Preferences), a long line wrapping onto the next;
+        # the last one ends in an ellipsis. A small width request keeps a
+        # long clip from asking for a wider popup.
+        title.set_wrap(True)
+        title.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        title.set_width_chars(1)
+        title.set_max_width_chars(1)
+        title.set_hexpand(True)
         title.add_css_class("title")
         subtitle = Gtk.Label(xalign=0)
         subtitle.set_ellipsize(Pango.EllipsizeMode.END)
@@ -1618,7 +1663,8 @@ class ClipmanWindow(Adw.ApplicationWindow):
             row._clip_title.remove_css_class("masked")
             row._clip_subtitle.remove_css_class("warning")
             title = ("[Image]" if ctype == "image"
-                     else _first_line(text)[:120] or _("(empty)"))
+                     else _preview_text(text, self._preview_lines)
+                     or _("(empty)"))
             if ctype == "image":
                 info = self._image_info(entry.get("image_path"))
                 if info:
@@ -1646,6 +1692,8 @@ class ClipmanWindow(Adw.ApplicationWindow):
             )
         else:
             row._clip_title.set_text(title)
+        row._clip_title.set_lines(
+            self._preview_lines if ctype == "text" and not sensitive else 1)
         row._clip_subtitle.set_text(subtitle)
 
         # --- leading tile, and the preview of an image -----------------
@@ -1716,6 +1764,7 @@ class ClipmanWindow(Adw.ApplicationWindow):
         row._clip_title.remove_css_class("masked")
         row._clip_subtitle.remove_css_class("warning")
         row._clip_title.set_text(snippet["name"])
+        row._clip_title.set_lines(1)
         uses = snippet.get("use_count") or 0
         # Mockup meta: "Snippet · used 14×"; before first use show the
         # snippet preview so the row isn't a bare name.
@@ -2304,10 +2353,10 @@ class ClipmanWindow(Adw.ApplicationWindow):
                 self._sensitive_timeout = DEFAULT_SENSITIVE_TIMEOUT
         elif key == "thumbnail_height":
             self._thumb_height = thumbnails.clamp_height(value)
-            # The slider fires on every step; rebind once it rests.
-            if self._thumb_rebind_id:
-                GLib.source_remove(self._thumb_rebind_id)
-            self._thumb_rebind_id = GLib.timeout_add(80, self._rebind_rows)
+            self._queue_rebind()
+        elif key == "preview_lines":
+            self._preview_lines = _clamp_preview_lines(value)
+            self._queue_rebind()
         elif key == "max_entries":
             # A lower cap applies now, not at the next copy.
             self.db.enforce_max_entries()
