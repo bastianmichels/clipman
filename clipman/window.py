@@ -22,6 +22,7 @@ import gi
 # CodeQL flags as a cyclic import (window <-> clipman package).
 from gettext import gettext as _
 
+import clipman.placement as placement
 import clipman.thumbnails as thumbnails
 import clipman.updates as updates
 from clipman._version import __version__
@@ -401,9 +402,12 @@ class ClipmanWindow(Adw.ApplicationWindow):
         self._img_info_cache = {}
 
         self.set_title("Clipman")
-        self.set_default_size(420, self._clamped_default_height())
-        # Win+V is a fixed overlay panel, not a resizable app window.
-        self.set_resizable(False)
+        # Where the popup opens and how big it is (clipman/placement.py).
+        # The user may resize it; the size is kept between opens.
+        self._placement = placement.Placement(self.db)
+        self.set_default_size(*self._placement.size(
+            self._clamped_default_height(), self._monitor_size()))
+        self.set_resizable(True)
         self.add_css_class("clipman-window")
 
         # Load persisted settings (only the subset Phase 1 actually uses;
@@ -2602,39 +2606,74 @@ class ClipmanWindow(Adw.ApplicationWindow):
         return True
 
     def _move_to_cursor(self):
-        """Ask the GNOME Shell extension to reposition us near the cursor.
+        """Ask the GNOME Shell extension to place the popup: at the pointer
+        plus the remembered offset, or at the remembered fixed spot.
 
-        Best-effort — if the extension isn't installed the window stays
-        wherever the compositor placed it, which is acceptable for Phase 1.
+        Best-effort and non-blocking — without the extension the window
+        stays wherever the compositor placed it.
         """
         self._cursor_move_id = 0
         # A stale timer must never re-position/re-activate a hidden popup
         # (the extension now also focuses the window on move).
         if not self.get_visible():
             return False
+        mode, x, y = self._placement.request()
+        self._call_extension("PlaceWindow", "ssii", (self.get_title(), mode, x, y),
+                             on_error=self._place_with_old_extension)
+        return False
+
+    def _place_with_old_extension(self, exc):
+        """An extension from before PlaceWindow: the Shell loads a new one
+        only at the next login. Open at the pointer as it did."""
+        name = getattr(exc, "get_dbus_name", lambda: None)()
+        if name == "org.freedesktop.DBus.Error.UnknownMethod" and self.get_visible():
+            self._call_extension("MoveWindowToCursor", "s", (self.get_title(),))
+
+    def _call_extension(self, method, signature, args, on_error=None):
+        """Call the GNOME Shell extension without waiting for it.
+
+        It goes out on the connection that owns com.clipman.Daemon (the
+        extension answers no one else), and a hung Shell costs nothing
+        but the timeout. ``on_error(exception)`` runs on the main loop.
+        """
+        def _failed(exc):
+            # Expected without GNOME or the extension; traced for support.
+            logger.debug("Shell extension %s failed: %s", method, exc)
+            if on_error is not None:
+                on_error(exc)
+
         try:
             import dbus
-            bus = dbus.SessionBus()
-            proxy = bus.get_object(
+            dbus.SessionBus().call_async(
                 "org.gnome.Shell.Extensions.clipman",
                 "/org/gnome/Shell/Extensions/clipman",
+                "org.gnome.Shell.Extensions.clipman",
+                method, signature, args,
+                lambda *_reply: None, _failed, timeout=2.0,
             )
-            iface = dbus.Interface(
-                proxy, "org.gnome.Shell.Extensions.clipman"
-            )
-            iface.MoveWindowToCursor("Clipman")
-        except Exception as exc:
-            # The python-dbus module or the GNOME Shell extension may
-            # be absent — both are expected on non-GNOME desktops, and
-            # dbus raises a wide variety of error types when the bus
-            # name isn't owned. Trace the failure for support requests
-            # but leave the window where the compositor placed it.
-            logger.debug(
-                "Shell extension move-to-cursor unavailable: %s",
-                exc,
-                exc_info=True,
-            )
-        return False
+        except Exception as exc:  # no dbus module, no bus
+            _failed(exc)
+
+    def on_popup_closed_at(self, pointer, placed, final):
+        """The extension reports where the popup was when it closed; a
+        move the user made becomes the new offset / fixed spot."""
+        try:
+            self._placement.record(pointer, placed, final)
+        except Exception:
+            logger.warning("could not store the popup position", exc_info=True)
+
+    def reset_position(self):
+        """Open at the pointer again, with no offset."""
+        self._placement.reset()
+
+    def _monitor_size(self):
+        """(width, height) of the first monitor, or None (headless)."""
+        try:
+            monitors = Gdk.Display.get_default().get_monitors()
+            geom = monitors.get_item(0).get_geometry()
+            return geom.width, geom.height
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Toggle (public — dbus_service.Toggle() routes here)
@@ -2722,6 +2761,9 @@ class ClipmanWindow(Adw.ApplicationWindow):
             self._scroll_top_idle_id = 0
         self._cancel_search_debounce()
         self._cancel_fill()
+        if self.get_visible():
+            # Keep a size the user dragged to for the next open.
+            self._placement.save_size(self.get_width(), self.get_height())
         for dialog in (self._child_dialog, self._prefs_dialog):
             if dialog is None:
                 continue

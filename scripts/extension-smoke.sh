@@ -44,6 +44,7 @@ fi
 echo "== Foreign callers are refused (direct name)"
 expect_denied SimulatePaste "'ctrl-v'"
 expect_denied MoveWindowToCursor "'Clipman'"
+expect_denied PlaceWindow "'Clipman'" "'pointer'" 0 0
 expect_denied RestorePreviousFocus
 expect_denied SetPaused true
 

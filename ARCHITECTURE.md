@@ -147,6 +147,7 @@ can type keystrokes and move focus inside the compositor.
 | `Show()`                              | `() -> ()`   | Forces the popup visible.                                                                                                                                                                                         |
 | `Hide()`                              | `() -> ()`   | Hides the popup.                                                                                                                                                                                                  |
 | `Quit()`                              | `() -> ()`   | Exits the GTK application cleanly.                                                                                                                                                                                |
+| `ReportWindowPosition(iiiiii)`        | `(iiiiii) -> ()` | Called by the extension when a popup it placed closes: the pointer at open time, where it placed the popup, and where the popup ended. A move the user made becomes the new offset (or fixed spot) in the daemon's settings (`clipman/placement.py`). |
 | `NewEntry(s content_type, s content)` | `(ss) -> ()` | Called by the extension (or by the `wl-paste --watch` fallback) when the clipboard changes. `content_type` is `text` or `image`; `content` is the UTF-8 text, or the empty string for images (which the daemon then reads through `wl-paste --type image/png`). |
 
 ### Extension
@@ -159,11 +160,12 @@ can type keystrokes and move focus inside the compositor.
 | Method                        | Signature   | Description                                                                                                                                                               |
 | ----------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SimulatePaste(s mode)`       | `(s) -> ()` | Simulates a paste keystroke through a Clutter virtual keyboard. `mode` is one of `auto`, `ctrl-v`, `ctrl-shift-v`, or `shift-insert`; unknown values fall back to `auto`. |
-| `MoveWindowToCursor(s title)` | `(s) -> ()` | Moves the daemon's popup (matched by `wm_class`, pid and `title`) to the cursor and gives it focus.                                                                     |
+| `MoveWindowToCursor(s title)` | `(s) -> ()` | Moves the daemon's popup (matched by `wm_class`, pid and `title`) to the cursor and gives it focus. Kept for daemons from before `PlaceWindow`.                          |
+| `PlaceWindow(s title, s mode, i x, i y)` | `(ssii) -> ()` | Places the popup at the pointer plus the offset (x, y) (`mode` `pointer`), or at the screen position (x, y) (`mode` `fixed`), kept fully inside the monitor's work area, and gives it focus. When the popup closes, the extension reports back with `ReportWindowPosition`. It keeps no settings of its own. |
 | `RestorePreviousFocus()`      | `() -> ()`  | Gives focus back to the window the user came from, right before the paste.                                                                                                |
 | `SetPaused(b paused)`         | `(b) -> ()` | Stops or resumes clipboard reads; the daemon calls it when incognito changes.                                                                                             |
 
-All four methods accept calls only from the connection that owns
+All five methods accept calls only from the connection that owns
 `com.clipman.Daemon`; other callers get `AccessDenied`. The
 `SimulatePaste(s mode)` argument was added in extension v5. The daemon
 calls it with the mode, retries once without it for an older extension,

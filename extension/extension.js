@@ -1,4 +1,5 @@
 import Meta from 'gi://Meta';
+import Mtk from 'gi://Mtk';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -11,6 +12,15 @@ const CLIPMAN_WM_CLASS = 'com.clipman.Clipman';
 // Only the process that owns this name may call the methods below.
 const DAEMON_BUS_NAME = 'com.clipman.Daemon';
 const DAEMON_OBJECT_PATH = '/com/clipman/Daemon';
+
+// Calls to the daemon never wait longer than this: a hung daemon must not
+// hold anything up in the Shell.
+const DAEMON_CALL_TIMEOUT_MS = 2000;
+
+// Mutter places a window when it first shows it. If PlaceWindow came
+// first, that placement moves the popup away; a move this soon after
+// placing is taken to be it, and undone once.
+const SETTLE_US = 500 * 1000;
 
 // Same limit as the daemon's MAX_TEXT_SIZE, in UTF-8 bytes: it drops
 // longer clips anyway, so reading more only costs the Shell memory.
@@ -47,6 +57,12 @@ const PASTE_DBUS_IFACE = `
     </method>
     <method name="MoveWindowToCursor">
       <arg type="s" direction="in" name="title"/>
+    </method>
+    <method name="PlaceWindow">
+      <arg type="s" direction="in" name="title"/>
+      <arg type="s" direction="in" name="mode"/>
+      <arg type="i" direction="in" name="x"/>
+      <arg type="i" direction="in" name="y"/>
     </method>
     <method name="RestorePreviousFocus"/>
     <method name="SetPaused">
@@ -108,6 +124,9 @@ export default class ClipmanExtension extends Extension {
         this._clipboardTimeout = null;
         this._readCancellable = null;
         this._readTimeoutId = null;
+        // The popup placed by PlaceWindow, until it closes (see
+        // _trackPlacement). Nothing here outlives one open.
+        this._placement = null;
 
         this._selection = global.display.get_selection();
         this._ownerChangedId = this._selection.connect(
@@ -173,6 +192,7 @@ export default class ClipmanExtension extends Extension {
             this._daemonWatchId = 0;
         }
         this._showHiddenWindows();
+        this._untrackPlacement();
         this._prevFocus = null;
         this._daemonOwner = null;
         this._daemonPid = 0;
@@ -325,6 +345,18 @@ export default class ClipmanExtension extends Extension {
         }
     }
 
+    PlaceWindowAsync([title, mode, x, y], invocation) {
+        if (!this._authorize(invocation))
+            return;
+        try {
+            this._placeWindow(title, mode, x, y);
+            invocation.return_value(null);
+        } catch (e) {
+            invocation.return_dbus_error(
+                'org.gnome.Shell.Extensions.clipman.Error', e.message);
+        }
+    }
+
     RestorePreviousFocusAsync(_params, invocation) {
         if (!this._authorize(invocation))
             return;
@@ -404,12 +436,8 @@ export default class ClipmanExtension extends Extension {
 
     // ---- Popup placement ---------------------------------------------
 
-    _moveWindowToCursor(title) {
-        const [x, y] = global.get_pointer();
-        const monitor = global.display.get_current_monitor();
-        const workArea = global.display.get_workspace_manager()
-            .get_active_workspace().get_work_area_for_monitor(monitor);
-
+    // The daemon's popup with this title, or null.
+    _findPopup(title) {
         for (const actor of global.get_window_actors()) {
             const metaWin = actor.get_meta_window();
             if (!metaWin || !_isClipmanWindow(metaWin))
@@ -418,26 +446,149 @@ export default class ClipmanExtension extends Extension {
                 continue;
             if (metaWin.get_title() !== title)
                 continue;
-
-            const rect = metaWin.get_frame_rect();
-            let winX = Math.min(x, workArea.x + workArea.width - rect.width);
-            let winY = Math.min(y, workArea.y + workArea.height - rect.height);
-            winX = Math.max(workArea.x, winX);
-            winY = Math.max(workArea.y, winY);
-            metaWin.move_frame(true, winX, winY);
-
-            // Remember the user's window before we take focus, so the
-            // paste can go back to it.
-            const focused = global.display.get_focus_window();
-            if (focused && !_isClipmanWindow(focused))
-                this._prevFocus = focused;
-
-            this._hideFromWindowList(metaWin);
-            // A background daemon's window is mapped without focus; only
-            // the Shell can give it focus on Wayland.
-            metaWin.activate(global.get_current_time());
-            break;
+            return metaWin;
         }
+        return null;
+    }
+
+    // (x, y) moved so that the popup lies fully inside the work area of
+    // `monitor`.
+    _clampToWorkArea(metaWin, x, y, monitor) {
+        const workArea = global.display.get_workspace_manager()
+            .get_active_workspace().get_work_area_for_monitor(monitor);
+        const rect = metaWin.get_frame_rect();
+        let winX = Math.min(x, workArea.x + workArea.width - rect.width);
+        let winY = Math.min(y, workArea.y + workArea.height - rect.height);
+        winX = Math.max(workArea.x, winX);
+        winY = Math.max(workArea.y, winY);
+        return [winX, winY];
+    }
+
+    // Move the popup's top-left corner to (x, y), kept fully inside the
+    // work area of `monitor`, then give it focus. Returns where it went.
+    _showPopupAt(metaWin, x, y, monitor) {
+        const [winX, winY] = this._clampToWorkArea(metaWin, x, y, monitor);
+        metaWin.move_frame(true, winX, winY);
+
+        // Remember the user's window before we take focus, so the
+        // paste can go back to it.
+        const focused = global.display.get_focus_window();
+        if (focused && !_isClipmanWindow(focused))
+            this._prevFocus = focused;
+
+        this._hideFromWindowList(metaWin);
+        // A background daemon's window is mapped without focus; only
+        // the Shell can give it focus on Wayland.
+        metaWin.activate(global.get_current_time());
+        return [winX, winY];
+    }
+
+    _moveWindowToCursor(title) {
+        const metaWin = this._findPopup(title);
+        if (!metaWin)
+            return;
+        const [x, y] = global.get_pointer();
+        this._showPopupAt(metaWin, x, y, global.display.get_current_monitor());
+    }
+
+    // mode 'pointer': (x, y) is an offset from the pointer. mode 'fixed':
+    // (x, y) is a position on the screen. Either way the popup stays on
+    // screen, and where it ends up when it closes goes back to the daemon.
+    _placeWindow(title, mode, x, y) {
+        const metaWin = this._findPopup(title);
+        if (!metaWin)
+            return;
+        const [px, py] = global.get_pointer();
+        const fixed = mode === 'fixed';
+        const targetX = fixed ? x : px + x;
+        const targetY = fixed ? y : py + y;
+        // Near the pointer, stay on the pointer's monitor; a fixed spot
+        // keeps to the monitor it lies on (or the pointer's, if that one
+        // was unplugged).
+        const [mx, my] = fixed ? [targetX, targetY] : [px, py];
+        let monitor = global.display.get_monitor_index_for_rect(
+            new Mtk.Rectangle({x: mx, y: my, width: 1, height: 1}));
+        if (monitor < 0)
+            monitor = global.display.get_current_monitor();
+        const placed = this._showPopupAt(metaWin, targetX, targetY, monitor);
+        this._trackPlacement(metaWin, [px, py], placed, [targetX, targetY, monitor]);
+    }
+
+    // Follow the placed popup until it closes, then report the pointer
+    // at open time, where the popup was placed and where it ended.
+    _trackPlacement(metaWin, pointer, placed, target) {
+        this._untrackPlacement();
+        const placement = {
+            metaWin, pointer, placed, last: placed, ids: [],
+            settleBy: GLib.get_monotonic_time() + SETTLE_US,
+        };
+        const remember = () => {
+            try {
+                const rect = metaWin.get_frame_rect();
+                const moved = rect.x !== placement.placed[0] ||
+                    rect.y !== placement.placed[1];
+                if (moved && placement.settleBy &&
+                    GLib.get_monotonic_time() < placement.settleBy) {
+                    // Mutter's first placement overrode ours: redo it,
+                    // with the window's real size now known.
+                    placement.settleBy = 0;
+                    placement.placed = this._clampToWorkArea(metaWin, ...target);
+                    placement.last = placement.placed;
+                    metaWin.move_frame(true, ...placement.placed);
+                    return;
+                }
+                placement.last = [rect.x, rect.y];
+            } catch (e) {
+                console.debug(`clipman: popup position unreadable: ${e.message}`);
+            }
+        };
+        placement.ids.push(metaWin.connect('position-changed', remember));
+        placement.ids.push(metaWin.connect('unmanaged', () => {
+            try {
+                this._untrackPlacement();
+                this._reportPlacement(placement);
+            } catch (e) {
+                console.warn(`clipman: popup close not handled: ${e.message}`);
+            }
+        }));
+        this._placement = placement;
+    }
+
+    _untrackPlacement() {
+        const placement = this._placement;
+        this._placement = null;
+        if (!placement)
+            return;
+        for (const id of placement.ids) {
+            try {
+                placement.metaWin.disconnect(id);
+            } catch {
+                // The window is gone already.
+            }
+        }
+    }
+
+    _reportPlacement({pointer, placed, last}) {
+        if (this._destroyed || this._daemonOwner === null)
+            return;
+        Gio.DBus.session.call(
+            DAEMON_BUS_NAME,
+            DAEMON_OBJECT_PATH,
+            DAEMON_BUS_NAME,
+            'ReportWindowPosition',
+            new GLib.Variant('(iiiiii)', [...pointer, ...placed, ...last]),
+            null,
+            Gio.DBusCallFlags.NO_AUTO_START,
+            DAEMON_CALL_TIMEOUT_MS,
+            null,
+            (connection, result) => {
+                try {
+                    connection.call_finish(result);
+                } catch (e) {
+                    console.debug(`clipman: position not delivered: ${e.message}`);
+                }
+            }
+        );
     }
 
     _hideFromWindowList(metaWin) {

@@ -463,6 +463,96 @@ class TestWindowConstruction(_WidgetTestCase):
         child.force_close.assert_called_once()      # stale dialog closed
         self.assertFalse(window._child_is_open())
 
+    def test_popup_is_resizable_and_opens_at_the_saved_size(self):
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        db.set_setting("window_width", "500")
+        db.set_setting("window_height", "450")
+        app = self._make_app("com.clipman.TestSize")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        self.assertTrue(window.get_resizable())
+        self.assertEqual(window.get_default_size(), (500, 450))
+
+    def test_hiding_saves_the_size(self):
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        app = self._make_app("com.clipman.TestSaveSize")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        window.set_visible(True)
+        with patch.object(window, "get_width", return_value=510), \
+                patch.object(window, "get_height", return_value=470):
+            window._hide()
+        self.assertEqual(db.get_setting("window_width"), "510")
+        self.assertEqual(db.get_setting("window_height"), "470")
+
+    def test_placement_asks_the_extension_with_the_offset(self):
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        db.set_setting("popup_offset_x", "-40")
+        db.set_setting("popup_offset_y", "25")
+        app = self._make_app("com.clipman.TestPlace")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        window.set_visible(True)
+        self.addCleanup(window.set_visible, False)
+        with patch.object(window, "_call_extension") as call:
+            window._move_to_cursor()
+        call.assert_called_once_with(
+            "PlaceWindow", "ssii", ("Clipman", "pointer", -40, 25),
+            on_error=window._place_with_old_extension)
+
+    def test_an_old_extension_still_opens_at_the_pointer(self):
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        app = self._make_app("com.clipman.TestOldExt")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        window.set_visible(True)
+        self.addCleanup(window.set_visible, False)
+        unknown = MagicMock()
+        unknown.get_dbus_name.return_value = (
+            "org.freedesktop.DBus.Error.UnknownMethod")
+        denied = MagicMock()
+        denied.get_dbus_name.return_value = (
+            "org.freedesktop.DBus.Error.AccessDenied")
+        with patch.object(window, "_call_extension") as call:
+            window._place_with_old_extension(denied)
+            call.assert_not_called()
+            window._place_with_old_extension(unknown)
+            call.assert_called_once_with("MoveWindowToCursor", "s", ("Clipman",))
+
+    def test_extension_calls_never_block(self):
+        """The call goes out with call_async and a timeout, and a missing
+        bus only reaches the error handler."""
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        app = self._make_app("com.clipman.TestAsync")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        bus = MagicMock()
+        with patch("dbus.SessionBus", return_value=bus):
+            window._call_extension("PlaceWindow", "ssii", ("Clipman", "pointer", 0, 0))
+        args, kwargs = bus.call_async.call_args
+        self.assertEqual(args[3:6], ("PlaceWindow", "ssii", ("Clipman", "pointer", 0, 0)))
+        self.assertEqual(kwargs, {"timeout": 2.0})
+        errors = []
+        with patch("dbus.SessionBus", side_effect=RuntimeError("no bus")):
+            window._call_extension("PlaceWindow", "ssii", (), on_error=errors.append)
+        self.assertEqual(len(errors), 1)
+
+    def test_a_reported_move_is_remembered(self):
+        from clipman.dbus_service import ClipmanDBusService
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        app = self._make_app("com.clipman.TestReport")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        service = MagicMock(window=window)
+        ClipmanDBusService.ReportWindowPosition(service, 500, 300, 500, 300, 450, 200)
+        self.assertEqual(window._placement.request(), ("pointer", -50, -100))
+
     def test_move_to_cursor_guarded_when_hidden(self):
         """A stale _move_to_cursor timer must not re-activate a hidden popup."""
         from clipman.window import ClipmanWindow
@@ -959,15 +1049,6 @@ class TestWindowConstruction(_WidgetTestCase):
         self.assertIsInstance(prefs._parent_window, Gtk.Window)
         self.assertNotIsInstance(prefs, Gtk.Window)
 
-    def test_window_is_not_resizable(self):
-        """Win+V parity: the popup is a fixed panel, not a resizable window."""
-        from clipman.window import ClipmanWindow
-
-        db = self._make_db()
-        app = self._make_app("com.clipman.TestResize")
-        window = ClipmanWindow(application=app, db=db, monitor=None)
-        self.assertFalse(window.get_resizable())
-
     def test_snippets_dialog_constructs(self):
         from clipman.snippets_dialog import SnippetsDialog
 
@@ -1214,6 +1295,20 @@ class TestWindowConstruction(_WidgetTestCase):
         scale.set_value(300)
         self.assertIn(("thumbnail_height", 300), received)
         self.assertEqual(db.get_setting("thumbnail_height"), "300")
+
+    def test_position_mode_and_reset(self):
+        from clipman.placement import Placement
+        from clipman.preferences import ClipmanPreferences
+
+        db = self._make_db()
+        prefs = ClipmanPreferences(db, None, on_setting_changed=None)
+        self.assertEqual(prefs._position_mode_row.get_selected(), 0)
+        prefs._position_mode_row.set_selected(1)
+        self.assertEqual(db.get_setting("popup_position_mode"), "fixed")
+        Placement(db).record((0, 0), (0, 0), (300, 200))
+        self.assertEqual(Placement(db).request(), ("fixed", 300, 200))
+        prefs._reset_position_btn.emit("clicked")
+        self.assertEqual(Placement(db).request(), ("pointer", 0, 0))
 
     def test_preview_lines_row_saves(self):
         from clipman.preferences import ClipmanPreferences

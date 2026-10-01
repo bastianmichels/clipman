@@ -47,6 +47,7 @@ import gi
 from gettext import gettext as _
 
 import clipman.keybindings as keybindings
+import clipman.placement as placement
 import clipman.thumbnails as thumbnails
 import clipman.updates as updates
 from clipman._version import __version__
@@ -488,6 +489,8 @@ class ClipmanPreferences(Adw.Dialog):
         layout_group.add(badges_row)
         page.add(layout_group)
 
+        page.add(self._build_position_group())
+
         return page
 
     def _accent_display_hex(self, value):
@@ -606,6 +609,47 @@ class ClipmanPreferences(Adw.Dialog):
         page.add(sensitive_group)
 
         return page
+
+    def _build_position_group(self):
+        """Where the popup opens: near the pointer (with the offset the
+        user dragged it to) or at a fixed spot; and a reset."""
+        group = Adw.PreferencesGroup()
+        group.set_title(_("Position"))
+        group.set_description(
+            _("Move the popup where you like it; it opens there next time.")
+        )
+        modes = (
+            ("pointer", _("Near the pointer")),
+            ("fixed", _("Fixed position")),
+        )
+        mode_ids = [mid for mid, _label in modes]
+        mode_row = Adw.ComboRow()
+        mode_row.set_title(_("Open the popup"))
+        mode_row.set_model(Gtk.StringList.new([label for _id, label in modes]))
+        mode_row.set_selected(mode_ids.index(placement.Placement(self.db).mode()))
+        mode_row.connect(
+            "notify::selected",
+            lambda row, _pspec: self._save(
+                "popup_position_mode", mode_ids[row.get_selected()]
+            ),
+        )
+        group.add(mode_row)
+        self._position_mode_row = mode_row
+
+        reset_row = Adw.ActionRow()
+        reset_row.set_title(_("Reset position"))
+        reset_row.set_subtitle(_("Open right at the pointer again."))
+        reset_btn = Gtk.Button(label=_("Reset"))
+        reset_btn.set_valign(Gtk.Align.CENTER)
+        reset_btn.connect("clicked", self._on_reset_position_clicked)
+        reset_row.add_suffix(reset_btn)
+        reset_row.set_activatable_widget(reset_btn)
+        group.add(reset_row)
+        self._reset_position_btn = reset_btn
+        return group
+
+    def _on_reset_position_clicked(self, _btn):
+        placement.Placement(self.db).reset()
 
     def _on_purge_clicked(self, _btn):
         # Every sensitive entry, pinned or not, even with auto-clear off:

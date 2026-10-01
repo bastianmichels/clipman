@@ -4,6 +4,23 @@ All notable changes to Clipman are documented in this file.
 
 ## [Unreleased]
 
+### Added — resizable popup that opens where you left it (fork)
+
+- The popup can be resized; its size is kept between opens (and fitted
+  to a smaller monitor).
+- It opens at the pointer plus the offset you last dragged it to (0/0
+  at first), kept fully on screen. Preferences → Appearance → Position
+  offers "Near the pointer" or "Fixed position", and "Reset position".
+- New extension method `PlaceWindow(ssii)`; the extension reports where
+  the popup ended with the daemon's new `ReportWindowPosition(iiiiii)`.
+  The extension stores nothing; the daemon keeps every value in its
+  settings, and only a move the user made is remembered (not the
+  screen-edge correction). Calls to the extension are now asynchronous
+  with a 2 s timeout. A daemon talking to an extension from before this
+  change falls back to `MoveWindowToCursor` until the next login.
+- Fixed a race where Mutter's first placement of a new window overrode
+  the extension's: a move within 0.5 s of placing is undone once.
+
 ### Added — 1 to 3 preview lines for text clips (fork)
 
 - Text rows show the first 1, 2 or 3 non-blank lines of a clip (new

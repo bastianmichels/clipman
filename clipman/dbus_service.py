@@ -33,11 +33,21 @@ class ClipmanDBusService(dbus.service.Object):
 
     @dbus.service.method(IFACE, in_signature="", out_signature="")
     def Hide(self):
-        self.window.set_visible(False)
+        # The same path as Escape: the size is saved, timers are stopped.
+        self.window._hide()
 
     @dbus.service.method(IFACE, in_signature="", out_signature="")
     def Quit(self):
         self.app.quit()
+
+    @dbus.service.method(IFACE, in_signature="iiiiii", out_signature="")
+    def ReportWindowPosition(self, pointer_x, pointer_y, placed_x, placed_y,
+                             final_x, final_y):
+        """Called by the GNOME Shell extension when the popup it placed
+        closes: the pointer when it opened, where the extension put the
+        popup, and where it was at the end."""
+        self.window.on_popup_closed_at(
+            (pointer_x, pointer_y), (placed_x, placed_y), (final_x, final_y))
 
     @dbus.service.method(IFACE, in_signature="ss", out_signature="")
     def NewEntry(self, content_type, content):
