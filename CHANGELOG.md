@@ -4,6 +4,17 @@ All notable changes to Clipman are documented in this file.
 
 ## [Unreleased]
 
+### Changed — History / Pinned tabs, 50-entry default (fork)
+
+- The popup's tabs are now History, Pinned and Snippets; the Text and
+  Images filters are gone. History lists every clip newest first, with
+  pins sorted by time among the rest (no "★ Pinned" section on top);
+  Pinned lists only pinned clips and has its own empty state.
+- Ctrl+Tab / Ctrl+Shift+Tab (and Ctrl+PageDown / PageUp) switch tabs.
+- The history keeps 50 entries by default (was 500). A lower cap set in
+  Preferences, or one lowered by an update, applies at once instead of
+  at the next copy.
+
 ### Added — installer warns about Super+V conflicts (fork)
 
 - `install.sh` warns when another custom shortcut already uses Clipman's

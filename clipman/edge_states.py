@@ -109,9 +109,18 @@ STATES: dict[str, StateSpec] = {
         tone="info",
         icon_name="system-search-symbolic",
         title=_("No clips match that search"),
-        body=_("Try a shorter query, switch the filter to All, or clear "
+        body=_("Try a shorter query, switch to the History tab, or clear "
                "the search box."),
         primary_action=(_("Clear search"), "clear-search"),
+    ),
+    "no-pins-yet": StateSpec(
+        id="no-pins-yet",
+        kind="statuspage",
+        tone="info",
+        icon_name="starred-symbolic",
+        title=_("No pinned clips yet"),
+        body=_("Pin a clip with its star, or select it and press P. Pinned "
+               "clips stay until you unpin them."),
     ),
     "no-image-search": StateSpec(
         id="no-image-search",

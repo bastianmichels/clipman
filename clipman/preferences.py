@@ -740,7 +740,7 @@ class ClipmanPreferences(Adw.Dialog):
         max_row.set_subtitle(
             _("Older entries roll off when the cap is reached.")
         )
-        max_row.set_value(self._get_int("max_entries", 500))
+        max_row.set_value(self._get_int("max_entries", database.MAX_ENTRIES))
         max_row.connect(
             "notify::value",
             lambda r, _p: self._save("max_entries", int(r.get_value())),

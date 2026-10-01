@@ -158,7 +158,7 @@ class TestEdgeStates(_WidgetTestCase):
 
     EXPECTED_IDS = {
         "populated", "empty", "no-snippets-yet", "no-results",
-        "no-image-search", "first-run",
+        "no-image-search", "no-pins-yet", "first-run",
         "incognito-on", "sensitive-shown", "sensitive-cleared",
         "extension-missing", "backup-failed", "restore-failed",
         "network-error", "db-locked", "paused", "paste-target-missing",
@@ -175,7 +175,7 @@ class TestEdgeStates(_WidgetTestCase):
         """
         from clipman.edge_states import STATES
         self.assertEqual(set(STATES.keys()), self.EXPECTED_IDS)
-        self.assertEqual(len(STATES), 21)
+        self.assertEqual(len(STATES), 22)
 
     def test_render_each_state_returns_widget(self):
         from clipman.edge_states import STATES, render_edge_state
@@ -721,22 +721,90 @@ class TestWindowConstruction(_WidgetTestCase):
             "paste-target-missing"
         )
 
-    def test_type_filters_query_the_database_by_type(self):
-        """The Text and Images tabs filter in SQL, not on the newest 200 rows."""
+    def test_tabs_query_the_database(self):
+        """History lists pins by time; the Pinned tab filters in SQL."""
         from clipman.window import ClipmanWindow
 
         db = self._make_db()
-        app = self._make_app("com.clipman.TestTypeFilter")
+        app = self._make_app("com.clipman.TestTabs")
         window = ClipmanWindow(application=app, db=db, monitor=None)
         window.db = MagicMock(wraps=db)
 
-        window._active_filter = "images"
         window.refresh()
-        window.db.get_entries.assert_called_with(limit=200, content_type="image")
+        window.db.get_entries.assert_called_with(
+            limit=200, pinned_only=False, pinned_first=False)
 
-        window._active_filter = "text"
+        window.select_tab("pinned")
+        window.db.get_entries.assert_called_with(
+            limit=200, pinned_only=True, pinned_first=False)
+
+        window._search_query = "x"
         window.refresh()
-        window.db.get_entries.assert_called_with(limit=200, content_type="text")
+        window.db.search.assert_called_with(
+            "x", pinned_only=True, pinned_first=False)
+
+    def test_history_sorts_pins_by_time(self):
+        """A pin is not lifted into its own section above newer clips."""
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        pinned = db.add_entry("text", content_text="old pinned")
+        db.toggle_pin(pinned)
+        db.conn.execute("UPDATE entries SET accessed_at = 1 WHERE id = ?",
+                        (pinned,))
+        db.add_entry("text", content_text="new clip")
+        app = self._make_app("com.clipman.TestPinOrder")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        window.refresh()
+        texts = [window._selection.get_item(i).data["content_text"]
+                 for i in range(window._selection.get_n_items())]
+        self.assertEqual(texts, ["new clip", "old pinned"])
+
+    def test_pinned_tab_without_pins_says_so(self):
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        db.add_entry("text", content_text="not pinned")
+        app = self._make_app("com.clipman.TestNoPins")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        window._show_edge_state = MagicMock()
+        window.select_tab("pinned")
+        window._show_edge_state.assert_called_with("no-pins-yet")
+
+    def test_ctrl_tab_cycles_the_tabs(self):
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        app = self._make_app("com.clipman.TestCtrlTab")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        ctrl = Gdk.ModifierType.CONTROL_MASK
+        shift = Gdk.ModifierType.SHIFT_MASK
+        seen = []
+        for _ in range(3):
+            self.assertTrue(
+                window._on_tab_key_pressed(None, Gdk.KEY_Tab, 0, ctrl))
+            seen.append(window._active_filter)
+        self.assertEqual(seen, ["pinned", "snippets", "all"])
+        window._on_tab_key_pressed(None, Gdk.KEY_ISO_Left_Tab, 0, ctrl | shift)
+        self.assertEqual(window._active_filter, "snippets")
+        window._on_tab_key_pressed(None, Gdk.KEY_Page_Up, 0, ctrl)
+        self.assertEqual(window._active_filter, "pinned")
+        # Plain Tab still moves focus.
+        self.assertFalse(window._on_tab_key_pressed(
+            None, Gdk.KEY_Tab, 0, Gdk.ModifierType(0)))
+
+    def test_lowering_the_cap_prunes_at_once(self):
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        for i in range(60):
+            db.add_entry("text", content_text=f"clip {i}")
+        db.set_setting("max_entries", "5000")
+        app = self._make_app("com.clipman.TestCap")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        db.set_setting("max_entries", "50")
+        window._on_setting_changed("max_entries", 50)
+        self.assertEqual(db.count_entries(), 50)
 
     def test_clipboard_token_uses_newest_text_not_pinned(self):
         from clipman.window import ClipmanWindow
@@ -1692,21 +1760,6 @@ class TestPopupBehaviour(_WidgetTestCase):
                     self.assertTrue(dialog._draft)
                     self.assertEqual(dialog._title_label.get_text(),
                                      "New snippet")
-
-    def test_searching_images_says_images_are_not_searchable(self):
-        """UI-27: it showed the generic "no clips match" page."""
-        db = self._make_db()
-        db.add_entry("image", image_data=b"\x89PNG\r\n\x1a\nfake")
-        window = self._window(db)
-        window._search_query = "invoice"
-        window._active_filter = "images"
-        window.refresh()
-        self.assertEqual(window._current_edge_widget.state_spec.id,
-                         "no-image-search")
-        window._active_filter = "text"
-        window.refresh()
-        self.assertEqual(window._current_edge_widget.state_spec.id,
-                         "no-results")
 
     def test_search_hint_hides_while_typing(self):
         """UI-28: the "/" chip covered the clear button and the query."""

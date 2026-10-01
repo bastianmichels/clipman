@@ -130,6 +130,14 @@ _DEFAULT_FONT_COLOR_TOKEN = "@card_fg_color"
 # immediately, then stream the remaining history in idle batches of this
 # size so a large history never freezes the popup on open / filter switch.
 _FILL_FIRST = 30
+
+# The switcher tabs, in Ctrl+Tab order. "all" is the history: every clip,
+# pins included, newest first.
+_TABS = (
+    ("all", _("History")),
+    ("pinned", _("Pinned")),
+    ("snippets", _("Snippets")),
+)
 _FILL_BATCH = 60
 
 # Per-row visual type -> symbolic icon + coloured tile (mockup parity,
@@ -398,6 +406,12 @@ class ClipmanWindow(Adw.ApplicationWindow):
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.connect("key-pressed", self._on_key_pressed)
         self.add_controller(key_ctrl)
+        # Ctrl+Tab switches tabs. Capture phase: in the bubble phase the
+        # focused widget would move focus with it first.
+        tab_ctrl = Gtk.EventControllerKey()
+        tab_ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        tab_ctrl.connect("key-pressed", self._on_tab_key_pressed)
+        self.add_controller(tab_ctrl)
 
         # Win+V parity: dismiss when the popup loses focus (user clicks
         # another window / elsewhere). GTK 3 had a focus-out->hide handler
@@ -743,12 +757,7 @@ class ClipmanWindow(Adw.ApplicationWindow):
         self._filter_buttons = {}
         self._filter_count_labels = {}
         first = None
-        for fid, label in [
-            ("all", _("All")),
-            ("text", _("Text")),
-            ("images", _("Images")),
-            ("snippets", _("Snippets")),
-        ]:
+        for fid, label in _TABS:
             btn = Gtk.ToggleButton()
             btn.add_css_class("filter-tab")
             btn.update_property([Gtk.AccessibleProperty.LABEL], [label])
@@ -782,7 +791,7 @@ class ClipmanWindow(Adw.ApplicationWindow):
         # recycling factory, so only the visible rows (~a dozen) are ever
         # built — opening the popup and switching filters no longer rebuilds
         # every row. A Gtk.SortListModel groups entries into dated sections
-        # (★ Pinned / Today / Yesterday / Earlier), rendered as list
+        # (Today / Yesterday / Earlier this week / Older), rendered as list
         # headers. SingleSelection keeps a keyboard cursor for arrow-nav and
         # the P / Delete / Enter shortcuts.
         self._store = Gio.ListStore(item_type=ClipItem)
@@ -884,19 +893,18 @@ class ClipmanWindow(Adw.ApplicationWindow):
             )
             items = [ClipItem(e, "snippet") for e in entries]
         else:
+            # History lists pins by time with everything else; the Pinned
+            # tab lists only them.
+            pinned_only = self._active_filter == "pinned"
             if self._search_query:
-                # search() covers text only, so the Images tab has no
-                # search results.
-                entries = (
-                    [] if self._active_filter == "images"
-                    else self.db.search(self._search_query)
+                entries = self.db.search(
+                    self._search_query, pinned_only=pinned_only,
+                    pinned_first=False,
                 )
-            elif self._active_filter == "text":
-                entries = self.db.get_entries(limit=200, content_type="text")
-            elif self._active_filter == "images":
-                entries = self.db.get_entries(limit=200, content_type="image")
             else:
-                entries = self.db.get_entries(limit=200)
+                entries = self.db.get_entries(
+                    limit=200, pinned_only=pinned_only, pinned_first=False,
+                )
             items = [ClipItem(e, "entry") for e in entries]
 
         # Cancel any in-flight incremental fill from a previous refresh.
@@ -907,12 +915,11 @@ class ClipmanWindow(Adw.ApplicationWindow):
         if not items:
             self._store.remove_all()
             if self._search_query:
-                # Search covers text only (images are tracked in #317).
-                state_id = ("no-image-search"
-                            if self._active_filter == "images"
-                            else "no-results")
+                state_id = "no-results"
             elif is_snippets:
                 state_id = "no-snippets-yet"
+            elif self._active_filter == "pinned":
+                state_id = "no-pins-yet"
             elif self._recording_problem is not None:
                 # Nothing records copies: say why and how to fix it
                 # (mockup first-run / snap-required / clipboard-blocked /
@@ -966,8 +973,7 @@ class ClipmanWindow(Adw.ApplicationWindow):
         try:
             counts = {
                 "all": self.db.count_entries(),
-                "text": self.db.count_entries("text"),
-                "images": self.db.count_entries("image"),
+                "pinned": self.db.count_entries(pinned_only=True),
                 "snippets": len(self.db.get_snippets()),
             }
         except Exception:
@@ -1500,7 +1506,7 @@ class ClipmanWindow(Adw.ApplicationWindow):
         list_item.set_accessible_description(details)
 
     # ------------------------------------------------------------------
-    # Section grouping: ★ Pinned / Today / Yesterday / Earlier
+    # Section grouping: Today / Yesterday / Earlier this week / Older
     # ------------------------------------------------------------------
 
     def _compute_bucket(self, item):
@@ -1508,8 +1514,6 @@ class ClipmanWindow(Adw.ApplicationWindow):
         if item.kind != "entry":
             return (0, "")
         entry = item.data
-        if entry.get("pinned"):
-            return (0, _("★ Pinned"))
         try:
             d = datetime.fromtimestamp(entry.get("accessed_at") or 0).date()
         except (OSError, OverflowError, ValueError):
@@ -1571,25 +1575,12 @@ class ClipmanWindow(Adw.ApplicationWindow):
             box._h_title.set_text("")
             box._h_count.set_text("")
             return
-        order, label = self._bucket(item)
+        _order, label = self._bucket(item)
         # Uppercase like the mockup's group headers (GTK CSS has no
         # text-transform, so do it here; .upper() is locale-aware enough
         # for the translated bucket names).
         box._h_title.set_text(label.upper())
-        if order == 0:
-            # Pinned group: gold header + item count on the right (mockup
-            # .group-header.pinned with a trailing count).
-            box._h_title.add_css_class("pinned")
-            box._h_count.add_css_class("pinned")
-            n = sum(
-                1 for i in range(self._selection.get_n_items())
-                if self._bucket(self._selection.get_item(i))[0] == 0
-            )
-            box._h_count.set_text(str(n))
-        else:
-            box._h_title.remove_css_class("pinned")
-            box._h_count.remove_css_class("pinned")
-            box._h_count.set_text("")
+        box._h_count.set_text("")
 
     def _bind_entry_row(self, row, entry):
         ctype = entry.get("content_type") or "text"
@@ -2297,6 +2288,11 @@ class ClipmanWindow(Adw.ApplicationWindow):
                 self._sensitive_timeout = max(10, min(300, int(value)))
             except (TypeError, ValueError):
                 self._sensitive_timeout = DEFAULT_SENSITIVE_TIMEOUT
+        elif key == "max_entries":
+            # A lower cap applies now, not at the next copy.
+            self.db.enforce_max_entries()
+            if self.get_visible():
+                self.refresh()
         elif key == "sensitive_autoclear":
             self._sensitive_autoclear = str(value).lower() == "true"
             if self.get_visible():
@@ -2309,6 +2305,31 @@ class ClipmanWindow(Adw.ApplicationWindow):
             self._show_edge_state("backup-failed")
         elif key == "restore_failed":
             self._show_edge_state("restore-failed")
+
+    def _on_tab_key_pressed(self, _controller, keyval, _keycode, state):
+        """Ctrl+Tab / Ctrl+PageDown: next tab; with Shift, or
+        Ctrl+PageUp: previous tab. Wraps around."""
+        if not state & Gdk.ModifierType.CONTROL_MASK:
+            return False
+        if keyval in (Gdk.KEY_Tab, Gdk.KEY_KP_Tab, Gdk.KEY_Page_Down):
+            step = -1 if state & Gdk.ModifierType.SHIFT_MASK else 1
+        elif keyval == Gdk.KEY_ISO_Left_Tab:
+            step = -1
+        elif keyval == Gdk.KEY_Page_Up:
+            step = -1
+        else:
+            return False
+        self.select_tab(step=step)
+        return True
+
+    def select_tab(self, tab_id=None, step=0):
+        """Switch to ``tab_id``, or move ``step`` tabs from the current one."""
+        ids = [fid for fid, _label in _TABS]
+        if tab_id is None:
+            current = ids.index(self._active_filter) if self._active_filter in ids else 0
+            tab_id = ids[(current + step) % len(ids)]
+        # The button's toggled handler switches the view.
+        self._filter_buttons[tab_id].set_active(True)
 
     def _on_key_pressed(self, _controller, keyval, _keycode, _state):
         """Wire the shortcuts advertised in the footer hints.

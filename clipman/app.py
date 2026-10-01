@@ -102,6 +102,9 @@ class ClipmanApp(Adw.Application):
             logger.exception("clipboard database could not be opened")
             self._present_db_error()
             return
+        # A cap lowered by an update (or a restored backup) applies now,
+        # not at the next copy.
+        self.db.enforce_max_entries()
         self.monitor = ClipboardMonitor(self.db, on_new_entry=self._on_new_entry)
         # Surface repeated wl-paste crashes in the popup instead of dying
         # silently (mockup watcher-crashed).

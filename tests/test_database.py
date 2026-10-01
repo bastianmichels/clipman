@@ -114,6 +114,36 @@ class TestClipboardDB(unittest.TestCase):
         self.assertEqual(entries[0]["content_text"], "will be pinned")
         self.assertEqual(entries[0]["pinned"], 1)
 
+    def test_pins_by_time_and_pinned_only(self):
+        old = self.db.add_entry("text", content_text="old pinned")
+        self.db.toggle_pin(old)
+        time.sleep(0.05)
+        self.db.add_entry("text", content_text="new")
+        self.db.add_entry("image", image_data=b"\x89PNG\r\n\x1a\npinned image")
+
+        texts = [e["content_text"] for e in self.db.get_entries(pinned_first=False)]
+        self.assertEqual(texts, [None, "new", "old pinned"])
+        pinned = self.db.get_entries(pinned_only=True)
+        self.assertEqual([e["content_text"] for e in pinned], ["old pinned"])
+        self.assertEqual(self.db.count_entries(pinned_only=True), 1)
+        self.assertEqual(self.db.count_entries("text", pinned_only=True), 1)
+        self.assertEqual(self.db.count_entries("image", pinned_only=True), 0)
+
+    def test_search_pinned_only_and_by_time(self):
+        old = self.db.add_entry("text", content_text="note old")
+        self.db.toggle_pin(old)
+        time.sleep(0.05)
+        self.db.add_entry("text", content_text="note new")
+        found = self.db.search("note", pinned_first=False)
+        self.assertEqual([e["content_text"] for e in found], ["note new", "note old"])
+        found = self.db.search("note", pinned_only=True)
+        self.assertEqual([e["content_text"] for e in found], ["note old"])
+
+    def test_default_cap_is_fifty(self):
+        for i in range(55):
+            self.db.add_entry("text", content_text=f"entry {i}")
+        self.assertEqual(self.db.count_entries(), 50)
+
     def test_get_entries_limit(self):
         for i in range(10):
             self.db.add_entry("text", content_text=f"entry {i}")

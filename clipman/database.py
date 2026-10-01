@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path.home() / ".local" / "share" / "clipman"
 IMAGES_DIR = DATA_DIR / "images"
 DB_PATH = DATA_DIR / "clipman.db"
-MAX_ENTRIES = 500
+MAX_ENTRIES = 50
 
 
 def _ensure_dirs():
@@ -368,43 +368,49 @@ class ClipboardDB:
         self.enforce_max_entries()
         return cursor.lastrowid
 
-    def get_entries(self, limit: int = 50, offset: int = 0,
-                    content_type: str = None):
+    @staticmethod
+    def _entry_filter(content_type=None, pinned_only=False):
+        """WHERE clause and parameters for the entry queries."""
+        clauses, params = [], []
         if content_type:
-            rows = self.conn.execute(
-                """SELECT * FROM entries WHERE content_type = ?
-                   ORDER BY pinned DESC, accessed_at DESC
-                   LIMIT ? OFFSET ?""",
-                (content_type, limit, offset)
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                """SELECT * FROM entries
-                   ORDER BY pinned DESC, accessed_at DESC
-                   LIMIT ? OFFSET ?""",
-                (limit, offset)
-            ).fetchall()
+            clauses.append("content_type = ?")
+            params.append(content_type)
+        if pinned_only:
+            clauses.append("pinned = 1")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        return where, params
+
+    def get_entries(self, limit: int = 50, offset: int = 0,
+                    content_type: str = None, pinned_only: bool = False,
+                    pinned_first: bool = True):
+        """Newest first. ``pinned_first`` keeps pins at the top; without
+        it pins sort by time like every other entry."""
+        where, params = self._entry_filter(content_type, pinned_only)
+        order = "pinned DESC, accessed_at DESC" if pinned_first else "accessed_at DESC"
+        rows = self.conn.execute(
+            f"SELECT * FROM entries{where} ORDER BY {order} LIMIT ? OFFSET ?",
+            (*params, limit, offset)
+        ).fetchall()
         return [dict(r) for r in rows]
 
-    def count_entries(self, content_type: str = None) -> int:
-        if content_type:
-            row = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM entries WHERE content_type = ?",
-                (content_type,)
-            ).fetchone()
-        else:
-            row = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM entries"
-            ).fetchone()
+    def count_entries(self, content_type: str = None,
+                      pinned_only: bool = False) -> int:
+        where, params = self._entry_filter(content_type, pinned_only)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) as cnt FROM entries{where}", params
+        ).fetchone()
         return row["cnt"]
 
-    def search(self, query: str, limit: int = 50):
+    def search(self, query: str, limit: int = 50, pinned_only: bool = False,
+               pinned_first: bool = True):
         # Escape LIKE wildcards so user input is treated literally
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pinned = " AND pinned = 1" if pinned_only else ""
+        order = "pinned DESC, accessed_at DESC" if pinned_first else "accessed_at DESC"
         rows = self.conn.execute(
-            """SELECT * FROM entries
-               WHERE content_type = 'text' AND content_text LIKE ? ESCAPE '\\'
-               ORDER BY pinned DESC, accessed_at DESC
+            f"""SELECT * FROM entries
+               WHERE content_type = 'text' AND content_text LIKE ? ESCAPE '\\'{pinned}
+               ORDER BY {order}
                LIMIT ?""",
             (f"%{escaped}%", limit)
         ).fetchall()
