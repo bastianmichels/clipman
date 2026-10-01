@@ -40,6 +40,9 @@ All notable changes to Clipman are documented in this file.
 - Fixed: dragging the popup to move or resize it made it vanish. The
   compositor takes the focus away for the drag, which read as a click
   outside; a mouse button held down inside the popup now keeps it open.
+- Preferences and Snippets fold up in a narrow popup: the page list
+  comes first and a page opens over it with a back button, instead of
+  the side-by-side layout being cut off on the right.
 
 ### Added — 1 to 3 preview lines for text clips (fork)
 

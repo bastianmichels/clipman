@@ -1374,6 +1374,28 @@ class TestWindowConstruction(_WidgetTestCase):
         prefs._reset_position_btn.emit("clicked")
         self.assertEqual(Placement(db).request(), ("pointer", 0, 0))
 
+    def test_preferences_fold_up_in_a_narrow_popup(self):
+        """The 420 px popup cut the side-by-side Preferences off."""
+        from clipman.preferences import ClipmanPreferences
+
+        db = self._make_db()
+        prefs = ClipmanPreferences(db, None, on_setting_changed=None)
+        self.assertIsInstance(prefs._split, Adw.NavigationSplitView)
+        self.assertFalse(prefs._split.get_show_content())
+        # A deep link opens the page itself, also when folded.
+        prefs.show_page("storage")
+        self.assertTrue(prefs._split.get_show_content())
+        self.assertEqual(prefs._content_page.get_title(),
+                         prefs._stack.get_child_by_name("storage").get_title())
+
+    def test_new_snippet_opens_the_editor_when_folded(self):
+        from clipman.snippets_dialog import SnippetsDialog
+
+        dialog = SnippetsDialog(self._make_db())
+        dialog._split.set_collapsed(True)
+        dialog.start_new()
+        self.assertTrue(dialog._split.get_show_content())
+
     def test_preview_lines_row_saves(self):
         from clipman.preferences import ClipmanPreferences
 

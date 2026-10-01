@@ -189,31 +189,48 @@ class ClipmanPreferences(Adw.Dialog):
             row._page_title = page.get_title()
             self._sidebar.append(row)
 
-        self._title_widget = Adw.WindowTitle(
-            title=_("Preferences"), subtitle=""
-        )
-        header = Adw.HeaderBar()
-        header.set_title_widget(self._title_widget)
-
         sidebar_scroll = Gtk.ScrolledWindow()
         sidebar_scroll.set_policy(
             Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC
         )
         sidebar_scroll.set_child(self._sidebar)
-        sidebar_scroll.set_size_request(180, -1)
         sidebar_scroll.add_css_class("prefs-sidebar")
-
-        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        content.append(sidebar_scroll)
-        content.append(
-            Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        sidebar_toolbar = Adw.ToolbarView()
+        sidebar_toolbar.add_top_bar(Adw.HeaderBar())
+        sidebar_toolbar.set_content(sidebar_scroll)
+        sidebar_page = Adw.NavigationPage(
+            title=_("Preferences"), child=sidebar_toolbar
         )
-        content.append(self._stack)
 
-        toolbar_view = Adw.ToolbarView()
-        toolbar_view.add_top_bar(header)
-        toolbar_view.set_content(content)
-        self.set_child(toolbar_view)
+        self._title_widget = Adw.WindowTitle(
+            title=_("Preferences"), subtitle=""
+        )
+        header = Adw.HeaderBar()
+        header.set_title_widget(self._title_widget)
+        content_toolbar = Adw.ToolbarView()
+        content_toolbar.add_top_bar(header)
+        content_toolbar.set_content(self._stack)
+        self._content_page = Adw.NavigationPage(
+            title=_("Preferences"), child=content_toolbar
+        )
+
+        # Side by side when there is room; in a narrow popup the page list
+        # comes first and each page opens over it with a back button, so
+        # nothing is cut off.
+        self._split = Adw.NavigationSplitView()
+        self._split.set_min_sidebar_width(180)
+        self._split.set_max_sidebar_width(220)
+        self._split.set_sidebar(sidebar_page)
+        self._split.set_content(self._content_page)
+        narrow = Adw.Breakpoint.new(
+            Adw.BreakpointCondition.parse("max-width: 600sp")
+        )
+        narrow.add_setter(self._split, "collapsed", True)
+        self.add_breakpoint(narrow)
+        self.set_child(self._split)
+        self._sidebar.connect(
+            "row-activated", lambda *_a: self._split.set_show_content(True)
+        )
 
         self._sidebar.select_row(self._sidebar.get_row_at_index(0))
 
@@ -222,6 +239,7 @@ class ClipmanPreferences(Adw.Dialog):
             return
         self._stack.set_visible_child_name(row._page_id)
         self._title_widget.set_title(row._page_title)
+        self._content_page.set_title(row._page_title)
 
     def show_page(self, page_id):
         """Select ``page_id`` in the sidebar (deep links from edge states)."""
@@ -232,6 +250,7 @@ class ClipmanPreferences(Adw.Dialog):
                 break
             if row._page_id == page_id:
                 self._sidebar.select_row(row)
+                self._split.set_show_content(True)
                 break
             i += 1
 

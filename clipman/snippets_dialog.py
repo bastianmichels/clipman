@@ -65,7 +65,18 @@ class SnippetsDialog(Adw.Dialog):
         split.set_max_sidebar_width(SIDEBAR_WIDTH)
         split.set_sidebar(self._build_sidebar())
         split.set_content(self._build_content())
+        # In a narrow popup the list comes first and the editor opens over
+        # it with a back button, instead of being cut off.
+        narrow = Adw.Breakpoint.new(
+            Adw.BreakpointCondition.parse("max-width: 600sp")
+        )
+        narrow.add_setter(split, "collapsed", True)
+        self.add_breakpoint(narrow)
+        self._split = split
         self.set_child(split)
+        self._listbox.connect(
+            "row-activated", lambda *_a: split.set_show_content(True)
+        )
 
         self._reload_list()
 
@@ -361,6 +372,7 @@ class SnippetsDialog(Adw.Dialog):
         self._draft = True
         self._title_label.set_text(_("New snippet"))
         self._meta_label.set_text(_("Not saved yet"))
+        self._split.set_show_content(True)
         self._name_row.grab_focus()
 
     def _on_save_clicked(self, _btn):
