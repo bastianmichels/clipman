@@ -26,8 +26,9 @@ thread; SQLite access is intentionally serialized through the loop
 The UI tree is libadwaita-first: `clipman/window.py` builds an
 `Adw.ApplicationWindow` with an `Adw.HeaderBar` and a virtualised
 `Gtk.ListView` history list of plain `Gtk.Box` rows; `clipman/preferences.py` ships
-the settings surface as an `Adw.Dialog` with a navigation sidebar and
-six panes
+the settings surface as its own `Adw.Window`, transient for the popup so
+it stacks above it and may be larger than it, with an adaptive
+navigation sidebar and six panes
 (Appearance, Privacy, Shortcuts, Storage, Updates, About);
 `clipman/snippets_dialog.py` is an `Adw.NavigationSplitView`
 master-detail editor. The 20 declarative edge states from the

@@ -404,20 +404,29 @@ class TestWindowConstruction(_WidgetTestCase):
         theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
         for name in ROW_TYPE_ICONS.values():
             self.assertTrue(theme.has_icon(name), name)
-    def test_preferences_is_in_surface_dialog(self):
-        """Preferences must be an Adw.Dialog (in-surface), not a top-level.
-
-        Regression guard: as a top-level Adw.PreferencesWindow it opened
-        behind the popup on Wayland and looked unresponsive.
-        """
+    def test_preferences_is_a_window_above_the_popup(self):
+        """Preferences is its own window, so it can be larger than the
+        420 px popup (an in-surface dialog was cut off); it is transient
+        for the popup, which Mutter always stacks it above, so it cannot
+        open behind it as an earlier window version did."""
         from gi.repository import Gtk
 
         from clipman.preferences import ClipmanPreferences
+        from clipman.window import ClipmanWindow
 
         db = self._make_db()
-        prefs = ClipmanPreferences(db, None, on_setting_changed=None)
-        self.assertIsInstance(prefs, Adw.Dialog)
-        self.assertNotIsInstance(prefs, Gtk.Window)
+        app = self._make_app("com.clipman.TestPrefsWindow")
+        parent = ClipmanWindow(application=app, db=db, monitor=None)
+        prefs = ClipmanPreferences(db, parent, on_setting_changed=None)
+        self.assertIsInstance(prefs, Gtk.Window)
+        self.assertEqual(prefs.get_default_size(), (760, 690))
+        closed = []
+        prefs.connect("closed", lambda *_a: closed.append(True))
+        prefs.present(parent)
+        self.assertIs(prefs.get_transient_for(), parent)
+        self.assertTrue(prefs.get_mapped() or prefs.get_visible())
+        prefs.force_close()
+        self.assertEqual(closed, [True])
 
     def test_dismiss_on_focus_loss(self):
         """notify::is-active handler hides the popup when it loses focus,
@@ -1111,7 +1120,6 @@ class TestWindowConstruction(_WidgetTestCase):
         parent = ClipmanWindow(application=app, db=db, monitor=None)
         prefs = ClipmanPreferences(db, parent, on_setting_changed=None)
         self.assertIsInstance(prefs._parent_window, Gtk.Window)
-        self.assertNotIsInstance(prefs, Gtk.Window)
 
     def test_snippets_dialog_constructs(self):
         from clipman.snippets_dialog import SnippetsDialog

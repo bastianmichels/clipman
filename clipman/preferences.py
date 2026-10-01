@@ -63,7 +63,7 @@ try:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
     gi.require_version("Gdk", "4.0")
-    from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+    from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
 except (AttributeError, ValueError, ImportError) as e:
     raise RuntimeError(
         "GTK 4 + libadwaita not available: %s" % e
@@ -118,13 +118,17 @@ EVENT_KEYS = frozenset({
 })
 
 
-class ClipmanPreferences(Adw.Dialog):
-    """Six-pane preferences dialog with a left sidebar.
+class ClipmanPreferences(Adw.Window):
+    """Six-pane preferences window with a left sidebar.
 
-    An ``Adw.Dialog`` (not a separate top-level window) so it presents
-    in-surface, anchored to the popup via ``present(parent)`` — a
-    top-level window opened *behind* the popup on Wayland and looked
-    unresponsive. The layout matches ``docs/design/preferences.html``:
+    Its own top-level window, so it may be larger than the popup and
+    reach past its edges (an in-surface Adw.Dialog was cut off by the
+    420 px popup). ``present(parent)`` makes it transient for the popup:
+    Mutter always stacks a transient window above its parent, so it can
+    no longer open *behind* the popup, which is why an earlier window
+    version was dropped. It keeps the dialog's interface the popup
+    relies on: ``present(parent)``, ``force_close()`` and a ``closed``
+    signal. The layout matches ``docs/design/preferences.html``:
     a persistent icon+label sidebar on the left and the selected page on
     the right (Adw.PreferencesDialog's bottom view-switcher tabs read as
     cramped at this size).
@@ -135,9 +139,20 @@ class ClipmanPreferences(Adw.Dialog):
     without a restart.
     """
 
+    __gtype_name__ = "ClipmanPreferences"
+    __gsignals__ = {"closed": (GObject.SignalFlags.RUN_FIRST, None, ())}
+
     def __init__(self, db, parent=None, on_setting_changed=None):
         super().__init__()
         self.db = db
+        self.connect("close-request", self._on_close_request)
+        # Escape closes it, as it closed the dialog.
+        escape = Gtk.ShortcutController()
+        escape.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("Escape"),
+            Gtk.CallbackAction.new(lambda *_a: self.close() or True),
+        ))
+        self.add_controller(escape)
         self._on_setting_changed = on_setting_changed or (lambda k, v: None)
         self._kbd_dialog = None  # held so the GC doesn't collect mid-capture
         # As an Adw.Dialog this is NOT a Gtk.Window, and Gtk.FileDialog's
@@ -151,8 +166,7 @@ class ClipmanPreferences(Adw.Dialog):
         self.set_title(_("Preferences"))
         # Tall enough that the Appearance page fits without a scrollbar
         # (Adw.Dialog clamps to the work area on small screens anyway).
-        self.set_content_width(760)
-        self.set_content_height(690)
+        self.set_default_size(760, 690)
 
         # Pages carry their own title + icon; the sidebar reads both.
         self._stack = Gtk.Stack()
@@ -227,12 +241,25 @@ class ClipmanPreferences(Adw.Dialog):
         )
         narrow.add_setter(self._split, "collapsed", True)
         self.add_breakpoint(narrow)
-        self.set_child(self._split)
+        self.set_content(self._split)
         self._sidebar.connect(
             "row-activated", lambda *_a: self._split.set_show_content(True)
         )
 
         self._sidebar.select_row(self._sidebar.get_row_at_index(0))
+
+    def present(self, parent=None):
+        """Show the window above ``parent`` (the popup)."""
+        if parent is not None:
+            self.set_transient_for(parent)
+        super().present()
+
+    def force_close(self):
+        self.close()
+
+    def _on_close_request(self, _window):
+        self.emit("closed")
+        return False
 
     def _on_nav_selected(self, _listbox, row):
         if row is None:
