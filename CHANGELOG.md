@@ -37,6 +37,9 @@ All notable changes to Clipman are documented in this file.
   change falls back to `MoveWindowToCursor` until the next login.
 - Fixed a race where Mutter's first placement of a new window overrode
   the extension's: a move within 0.5 s of placing is undone once.
+- Fixed: dragging the popup to move or resize it made it vanish. The
+  compositor takes the focus away for the drag, which read as a click
+  outside; a mouse button held down inside the popup now keeps it open.
 
 ### Added — 1 to 3 preview lines for text clips (fork)
 

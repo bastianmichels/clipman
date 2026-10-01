@@ -505,6 +505,15 @@ class ClipmanWindow(Adw.ApplicationWindow):
         # another window / elsewhere). GTK 3 had a focus-out->hide handler
         # that was dropped in the GTK 4 port; restore it via is-active.
         self.connect("notify::is-active", self._on_active_changed)
+        # Dragging the header bar (move) or an edge (resize) hands the
+        # pointer to the compositor, which takes keyboard focus away until
+        # the drag ends. A button held down inside the popup tells that
+        # apart from a click on another window.
+        self._button_down = False
+        press_watch = Gtk.EventControllerLegacy()
+        press_watch.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        press_watch.connect("event", self._on_pointer_event)
+        self.add_controller(press_watch)
 
         # On Wayland the compositor delivers ``close-request`` when the
         # user clicks outside the popup or hits the compositor close
@@ -2794,15 +2803,31 @@ class ClipmanWindow(Adw.ApplicationWindow):
         self._prefs_dialog = None
         self.set_visible(False)
 
+    def _on_pointer_event(self, _controller, event):
+        """Note whether a mouse button is held down inside the popup.
+        Never handles the event."""
+        kind = event.get_event_type()
+        if kind == Gdk.EventType.BUTTON_PRESS:
+            self._button_down = True
+        elif kind == Gdk.EventType.BUTTON_RELEASE:
+            self._button_down = False
+        return False
+
     def _on_active_changed(self, *_args):
         """Hide the popup when it loses focus (Win+V click-outside dismiss).
 
         Skipped while an in-app dialog is still mapped so opening
-        preferences / snippets doesn't hide the popup from under them.
+        preferences / snippets doesn't hide the popup from under them,
+        and while the user moves or resizes the popup: the compositor
+        holds the focus until the drag ends (the release never reaches
+        us, so the flag clears when the focus comes back).
         """
+        if self.get_property("is-active"):
+            self._button_down = False
+            return
         if (
-            not self.get_property("is-active")
-            and self.get_visible()
+            self.get_visible()
+            and not self._button_down
             and not self._child_is_open()
         ):
             self._hide()

@@ -444,6 +444,49 @@ class TestWindowConstruction(_WidgetTestCase):
         window._on_active_changed()
         self.assertTrue(window.get_visible())  # child open -> stay put
 
+    def test_moving_or_resizing_does_not_dismiss(self):
+        """Dragging the header bar or an edge hands the pointer to the
+        compositor, which takes the focus away until the drag ends: the
+        popup vanished instead of moving."""
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        app = self._make_app("com.clipman.TestDrag")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        window.set_visible(True)
+        self.addCleanup(window.set_visible, False)
+
+        def pointer(kind):
+            event = MagicMock()
+            event.get_event_type.return_value = kind
+            self.assertFalse(window._on_pointer_event(None, event))
+
+        pointer(Gdk.EventType.BUTTON_PRESS)
+        window._on_active_changed()  # the drag starts: focus goes away
+        self.assertTrue(window.get_visible())
+        # The focus comes back when the drag ends; the release never
+        # reaches the popup.
+        with patch.object(window, "get_property", return_value=True):
+            window._on_active_changed()
+        self.assertFalse(window._button_down)
+        # Now a click on another window dismisses as before.
+        window._on_active_changed()
+        self.assertFalse(window.get_visible())
+
+    def test_a_finished_click_still_allows_dismiss(self):
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        app = self._make_app("com.clipman.TestClick")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        window.set_visible(True)
+        for kind in (Gdk.EventType.BUTTON_PRESS, Gdk.EventType.BUTTON_RELEASE):
+            event = MagicMock()
+            event.get_event_type.return_value = kind
+            window._on_pointer_event(None, event)
+        window._on_active_changed()
+        self.assertFalse(window.get_visible())
+
     def test_hide_cancels_timer_and_closes_child(self):
         """_hide() must reset the cursor timer and force-close any child so
         the dismiss guard can't latch (hiding never fires a dialog 'closed')."""
