@@ -523,6 +523,21 @@ class TestWindowConstruction(_WidgetTestCase):
             window._place_with_old_extension(unknown)
             call.assert_called_once_with("MoveWindowToCursor", "s", ("Clipman",))
 
+    def test_paste_calls_to_the_extension_time_out_quickly(self):
+        from clipman.window import ClipmanWindow
+
+        db = self._make_db()
+        app = self._make_app("com.clipman.TestShortTimeout")
+        window = ClipmanWindow(application=app, db=db, monitor=None)
+        bus = MagicMock()
+        with patch("dbus.SessionBus", return_value=bus), \
+                patch("dbus.Interface") as interface:
+            iface = window._shell_extension_iface()
+            iface.SimulatePaste("ctrl-v")
+        self.assertEqual(bus.get_object.call_args.kwargs, {"introspect": False})
+        interface.return_value.SimulatePaste.assert_called_once_with(
+            "ctrl-v", timeout=2.0)
+
     def test_extension_calls_never_block(self):
         """The call goes out with call_async and a timeout, and a missing
         bus only reaches the error handler."""

@@ -258,7 +258,7 @@ login2() {
         fail "a 1 MB copy did not reach the history whole ($(newest_length) characters)" "$WORK/long.log"
     fi
 
-    # The extension reads a copy only up to the daemon's 10 MB limit.
+    # The extension reads a copy only up to the daemon's 1 MB limit.
     # Before, the Shell read all of it: its peak grew by 273 MB for 50 MB.
     local shell peak after owners
     shell=$(shell_pid)

@@ -206,6 +206,10 @@ def _set_aside_damaged():
             logger.warning("Could not keep %s", wal, exc_info=True)
 
 
+# The start-up path keeps a damaged history this way, too.
+set_aside_damaged = _set_aside_damaged
+
+
 def restore_backup_file(path):
     """Replace the history on disk with the backup at ``path``, with no
     connection open (the database-error screen, where the live file may
@@ -307,6 +311,9 @@ class ClipboardDB:
         _ensure_dirs()
         self._open()
         self._create_table()
+        # Image files no entry points at: left by a crash between the
+        # write and the insert, or by an older version.
+        _reap_orphan_images(self.conn)
 
     def _open(self):
         # Safe: all DB access happens on the GLib main thread (D-Bus callbacks
@@ -329,6 +336,7 @@ class ClipboardDB:
         if content_type == "text" and content_text:
             h = content_hash(content_text.encode("utf-8"))
             image_path = None
+            new_file = False
         elif content_type == "image" and image_data:
             # Validate image magic bytes (PNG, JPEG, GIF, BMP, WebP)
             _MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"BM", b"RIFF")
@@ -336,6 +344,7 @@ class ClipboardDB:
                 return -1
             h = content_hash(image_data)
             image_path = str(IMAGES_DIR / f"{h}.png")
+            new_file = not os.path.exists(image_path)
             fd = os.open(image_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
                 os.write(fd, image_data)
@@ -344,6 +353,18 @@ class ClipboardDB:
         else:
             return -1
 
+        try:
+            return self._insert(content_type, content_text, image_path, h,
+                                now, sensitive)
+        except sqlite3.Error:
+            # No entry points at a file written just now: remove it
+            # rather than leave it for the next start-up.
+            if image_path and new_file:
+                _remove_file(image_path)
+            raise
+
+    def _insert(self, content_type, content_text, image_path, h, now,
+                sensitive):
         existing = self.conn.execute(
             "SELECT id FROM entries WHERE content_hash = ?", (h,)
         ).fetchone()

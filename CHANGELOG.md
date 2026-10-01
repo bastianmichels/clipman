@@ -4,6 +4,23 @@ All notable changes to Clipman are documented in this file.
 
 ## [Unreleased]
 
+### Changed — cache and stability hardening (fork)
+
+- Size limits: text clips up to 1 MB (was 10 MB; the extension reads
+  no more), images up to 20 MB (was 10 MB). A dropped copy is logged
+  with its size, never its content.
+- Image files no entry points at are deleted at start-up, and a failed
+  insert removes the image file it just wrote.
+- A damaged history database (not a locked or unreadable one) is kept
+  as `clipman.db.<time>.damaged` and Clipman starts with an empty
+  history instead of stopping at the error screen.
+- Extension: every signal handler and callback is wrapped so an error
+  is logged and never reaches the Shell; `disable()` cleans up each
+  part on its own; D-Bus calls to the daemon time out (2 s, 5 s for a
+  clip) instead of waiting forever.
+- The daemon's paste calls to the extension time out after 2 s (was
+  dbus-python's 25 s) and skip the introspection round trip.
+
 ### Added — resizable popup that opens where you left it (fork)
 
 - The popup can be resized; its size is kept between opens (and fitted

@@ -23,7 +23,7 @@ except (AttributeError, ValueError, ImportError) as e:
     ) from e
 
 import clipman.updates as updates
-from clipman.database import ClipboardDB
+from clipman.database import ClipboardDB, set_aside_damaged
 from clipman.clipboard_monitor import ClipboardMonitor
 from clipman.window import ClipmanWindow
 from clipman.dbus_service import ClipmanDBusService
@@ -87,6 +87,23 @@ class ClipmanApp(Adw.Application):
             logger.exception("Clipman could not start")
             self._fail()
 
+    def _open_db(self):
+        """Open the history. A damaged file is kept as
+        ``clipman.db.<time>.damaged`` and Clipman starts with an empty
+        history instead of stopping. A locked or unreadable file
+        (OperationalError, OSError) is not damaged: it raises, and the
+        error screen explains it."""
+        try:
+            return ClipboardDB()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError:
+            logger.warning("The clipboard history is damaged. It was kept "
+                           "as clipman.db.<time>.damaged, and a new one "
+                           "was started.", exc_info=True)
+            set_aside_damaged()
+            return ClipboardDB()
+
     def _fail(self):
         """Quit with a non-zero exit status: start-up failed."""
         self.exit_status = 1
@@ -94,7 +111,7 @@ class ClipmanApp(Adw.Application):
 
     def _start(self):
         try:
-            self.db = ClipboardDB()
+            self.db = self._open_db()
         except (sqlite3.DatabaseError, OSError):
             # Locked, unreadable or corrupt ("file is not a database" is a
             # DatabaseError, and OperationalError is one kind of it): show

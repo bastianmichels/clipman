@@ -309,19 +309,41 @@ class TestStartUp(unittest.TestCase):
 
     def test_unreadable_database_shows_the_error_screen(self):
         """"file is not a database" is a DatabaseError; only its subclass
-        OperationalError was caught, so the daemon died with a traceback."""
+        OperationalError was caught, so the daemon died with a traceback.
+        A damaged file is set aside first; the screen shows only when the
+        new, empty history cannot open either."""
         for exc in (sqlite3.DatabaseError("file is not a database"),
                     sqlite3.OperationalError("database is locked"),
                     PermissionError(13, "Permission denied")):
             with self.subTest(exc=exc):
                 app = self._make_app()
                 with patch.object(app, "_present_db_error") as present, \
+                     patch("clipman.app.set_aside_damaged") as set_aside, \
                      self.assertLogs("clipman.app", "ERROR"):
                     self._activate(app, **{
                         "clipman.app.ClipboardDB": {"side_effect": exc},
                     })
                 present.assert_called_once_with()
                 self.assertEqual(app.exit_status, 0)
+                # Only damage is set aside, never a lock or a permission.
+                self.assertEqual(set_aside.called,
+                                 type(exc) is sqlite3.DatabaseError)
+
+    def test_damaged_database_is_kept_and_an_empty_one_started(self):
+        app = self._make_app()
+        db = MagicMock(name="fresh db")
+        db.get_setting.return_value = "false"
+        damaged = sqlite3.DatabaseError("database disk image is malformed")
+        with patch.object(app, "_present_db_error") as present, \
+             patch("clipman.app.set_aside_damaged") as set_aside, \
+             self.assertLogs("clipman.app", "WARNING") as logs:
+            self._activate(app, **{
+                "clipman.app.ClipboardDB": {"side_effect": [damaged, db]},
+            })
+        set_aside.assert_called_once_with()
+        present.assert_not_called()
+        self.assertIs(app.db, db)
+        self.assertIn("damaged", logs.output[0])
 
     def test_failed_start_exits_non_zero(self):
         """GLib swallowed this exception and the daemon exited 0, so

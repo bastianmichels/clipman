@@ -59,7 +59,8 @@ Shell 45 through 51. On clipboard `owner-changed` events the
 extension reads the new content via a MIME-type fallback chain
 (`text/plain;charset=utf-8` -> `UTF8_STRING` -> `text/plain` ->
 `STRING`) and forwards it to the daemon over D-Bus. It reads at most
-10 MB, the daemon's limit, and drops a longer clip. A read ends at the
+1 MB of text, the daemon's limit, and drops (and logs) a longer clip;
+the daemon reads images up to 20 MB itself. A read ends at the
 next copy or after 5 s, and closes its pipe at once. Nothing is read
 while incognito is on or no process owns `com.clipman.Daemon`. It also exposes
 its own D-Bus surface for the daemon to invoke paste keystrokes and
@@ -113,6 +114,11 @@ written into `~/.local/share/clipman/images/` named by their hash, and
 the daemon checks their magic bytes (PNG, JPEG, GIF, BMP, WebP) before
 persisting. The BMP and WebP checks are loose, and a restore does not
 check images ([#335](https://github.com/MohammedEl-sayedAhmed/clipman/issues/335)).
+
+Image files that no entry points at are deleted at start-up, and a
+damaged database is kept as `clipman.db.<time>.damaged` while an empty
+one is started. Image-row previews are cached per size in
+`$XDG_CACHE_HOME/clipman/thumbnails/<px>/` (`clipman/thumbnails.py`).
 
 Filesystem permissions are enforced on every startup:
 

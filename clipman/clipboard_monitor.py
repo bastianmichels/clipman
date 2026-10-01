@@ -11,8 +11,8 @@ from clipman.sensitive import is_sensitive as _is_sensitive
 
 logger = logging.getLogger(__name__)
 
-MAX_TEXT_SIZE = 10 * 1024 * 1024   # 10 MB
-MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_TEXT_SIZE = 1024 * 1024        # 1 MB (the extension reads no more)
+MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
 MIN_EVENT_INTERVAL = 0.1  # seconds — drop the same content repeated this fast
 SELF_COPY_TTL = 2.0  # seconds — how long a self-copy skip stays armed
 
@@ -253,7 +253,12 @@ class ClipboardMonitor:
         if self._incognito or self._is_repeat(("text", text)):
             return
 
-        if not text or len(text.encode("utf-8", errors="replace")) > MAX_TEXT_SIZE:
+        if not text:
+            return
+        if len(text.encode("utf-8", errors="replace")) > MAX_TEXT_SIZE:
+            # The size only, never the content.
+            logger.warning("A copied text over %d bytes was not recorded",
+                           MAX_TEXT_SIZE)
             return
 
         sensitive = _is_sensitive(text)
@@ -312,7 +317,11 @@ def _read_limited(cmd, limit, timeout):
     finally:
         timer.cancel()
         proc.stdout.close()
-    if proc.returncode != 0 or not data or len(data) > limit:
+    if len(data) > limit:
+        logger.warning("%s gave more than %d bytes; the copy was not recorded",
+                       cmd[0], limit)
+        return None
+    if proc.returncode != 0 or not data:
         return None
     return data
 

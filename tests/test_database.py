@@ -282,6 +282,39 @@ class TestClipboardDB(unittest.TestCase):
         entries = self.db.get_entries(limit=MAX_ENTRIES + 10)
         self.assertLessEqual(len(entries), MAX_ENTRIES)
 
+    def test_start_up_removes_orphaned_images(self):
+        from clipman.database import ClipboardDB
+
+        kept_id = self.db.add_entry("image", image_data=b"\x89PNG\r\n\x1a\nkept")
+        kept = self.db.get_entries()[0]["image_path"]
+        orphan = self.images_dir / ("0" * 64 + ".png")
+        orphan.write_bytes(b"\x89PNG\r\n\x1a\norphan")
+        self.db.close()
+        self.db = ClipboardDB()
+        self.assertFalse(orphan.exists())
+        self.assertTrue(Path(kept).exists())
+        self.assertEqual(self.db.get_entries()[0]["id"], kept_id)
+
+    def test_failed_insert_leaves_no_image_file(self):
+        import sqlite3
+
+        with patch.object(self.db, "_insert",
+                          side_effect=sqlite3.OperationalError("disk full")):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.db.add_entry("image", image_data=b"\x89PNG\r\n\x1a\nlost")
+        self.assertEqual(list(self.images_dir.iterdir()), [])
+
+    def test_failed_insert_keeps_an_existing_image(self):
+        import sqlite3
+
+        self.db.add_entry("image", image_data=b"\x89PNG\r\n\x1a\nsame")
+        with patch.object(self.db, "_insert",
+                          side_effect=sqlite3.OperationalError("disk full")):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.db.add_entry("image", image_data=b"\x89PNG\r\n\x1a\nsame")
+        # Its entry still points at it.
+        self.assertEqual(len(list(self.images_dir.iterdir())), 1)
+
     def test_enforce_max_entries_preserves_pinned(self):
         # Pin one entry, then fill up to max
         first_id = self.db.add_entry("text", content_text="pinned entry")

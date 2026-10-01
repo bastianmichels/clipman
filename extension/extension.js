@@ -16,6 +16,21 @@ const DAEMON_OBJECT_PATH = '/com/clipman/Daemon';
 // Calls to the daemon never wait longer than this: a hung daemon must not
 // hold anything up in the Shell.
 const DAEMON_CALL_TIMEOUT_MS = 2000;
+// NewEntry carries up to MAX_TEXT_BYTES, which the daemon also scans for
+// secrets before it answers.
+const NEW_ENTRY_TIMEOUT_MS = 5000;
+
+// Run `fn`; log instead of throwing. Every callback the Shell or GLib
+// calls goes through this: an exception there is our bug, and it must
+// never break the Shell's own handlers.
+function _guard(what, fn) {
+    try {
+        return fn();
+    } catch (e) {
+        console.warn(`clipman: ${what} failed: ${e.message}`);
+        return undefined;
+    }
+}
 
 // Mutter places a window when it first shows it. If PlaceWindow came
 // first, that placement moves the popup away; a move this soon after
@@ -24,7 +39,7 @@ const SETTLE_US = 500 * 1000;
 
 // Same limit as the daemon's MAX_TEXT_SIZE, in UTF-8 bytes: it drops
 // longer clips anyway, so reading more only costs the Shell memory.
-const MAX_TEXT_BYTES = 10 * 1024 * 1024;
+const MAX_TEXT_BYTES = 1024 * 1024;
 
 // An app that owns the clipboard but never sends its data would hold the
 // read, and a pipe, open until it quits.
@@ -131,7 +146,7 @@ export default class ClipmanExtension extends Extension {
         this._selection = global.display.get_selection();
         this._ownerChangedId = this._selection.connect(
             'owner-changed',
-            this._onOwnerChanged.bind(this)
+            (...args) => _guard('owner-changed', () => this._onOwnerChanged(...args))
         );
 
         // Learn which connection owns the daemon name; only it may call us.
@@ -145,14 +160,14 @@ export default class ClipmanExtension extends Extension {
             Gio.BusType.SESSION,
             DAEMON_BUS_NAME,
             Gio.BusNameWatcherFlags.NONE,
-            (_connection, _name, owner) => {
+            (_connection, _name, owner) => _guard('daemon watch', () => {
                 this._onDaemonAppeared(owner);
                 this._ownBusName();
-            },
-            () => {
+            }),
+            () => _guard('daemon watch', () => {
                 this._onDaemonVanished();
                 this._ownBusName();
-            }
+            })
         );
 
         this._dbusImpl = Gio.DBusExportedObject.wrapJSObject(
@@ -168,31 +183,36 @@ export default class ClipmanExtension extends Extension {
 
     disable() {
         this._destroyed = true;
-        this._removeWindowListPatches();
-        if (this._clipboardTimeout) {
-            GLib.source_remove(this._clipboardTimeout);
-            this._clipboardTimeout = null;
-        }
-        this._cancelRead();
-        if (this._ownerChangedId) {
-            this._selection.disconnect(this._ownerChangedId);
-            this._ownerChangedId = null;
-        }
+        // Each step on its own: one that fails must not leave the rest
+        // (a signal handler, the bus name) behind.
+        _guard('disable: window list', () => this._removeWindowListPatches());
+        _guard('disable: timers', () => {
+            if (this._clipboardTimeout) {
+                GLib.source_remove(this._clipboardTimeout);
+                this._clipboardTimeout = null;
+            }
+            this._cancelRead();
+        });
+        _guard('disable: selection', () => {
+            if (this._ownerChangedId)
+                this._selection.disconnect(this._ownerChangedId);
+        });
+        this._ownerChangedId = null;
         this._selection = null;
-        if (this._dbusImpl) {
-            this._dbusImpl.unexport();
-            this._dbusImpl = null;
-        }
-        if (this._busNameId) {
-            Gio.bus_unown_name(this._busNameId);
-            this._busNameId = null;
-        }
-        if (this._daemonWatchId) {
-            Gio.bus_unwatch_name(this._daemonWatchId);
-            this._daemonWatchId = 0;
-        }
-        this._showHiddenWindows();
-        this._untrackPlacement();
+        _guard('disable: D-Bus object', () => this._dbusImpl?.unexport());
+        this._dbusImpl = null;
+        _guard('disable: bus name', () => {
+            if (this._busNameId)
+                Gio.bus_unown_name(this._busNameId);
+        });
+        this._busNameId = null;
+        _guard('disable: daemon watch', () => {
+            if (this._daemonWatchId)
+                Gio.bus_unwatch_name(this._daemonWatchId);
+        });
+        this._daemonWatchId = 0;
+        _guard('disable: hidden windows', () => this._showHiddenWindows());
+        _guard('disable: placement', () => this._untrackPlacement());
         this._prevFocus = null;
         this._daemonOwner = null;
         this._daemonPid = 0;
@@ -277,7 +297,7 @@ export default class ClipmanExtension extends Extension {
             new GLib.Variant('(s)', [owner]),
             new GLib.VariantType('(u)'),
             Gio.DBusCallFlags.NONE,
-            -1,
+            DAEMON_CALL_TIMEOUT_MS,
             null,
             (connection, result) => {
                 try {
@@ -636,7 +656,7 @@ export default class ClipmanExtension extends Extension {
         this._clipboardTimeout = GLib.timeout_add(
             GLib.PRIORITY_DEFAULT, 150, () => {
                 this._clipboardTimeout = null;
-                this._readClipboard(selectionSource);
+                _guard('clipboard read', () => this._readClipboard(selectionSource));
                 return GLib.SOURCE_REMOVE;
             }
         );
@@ -665,7 +685,7 @@ export default class ClipmanExtension extends Extension {
                 return GLib.SOURCE_REMOVE;
             }
         );
-        const done = data => {
+        const done = data => _guard('clipboard read', () => {
             if (cancellable.is_cancelled() || this._destroyed)
                 return;
             this._endRead();
@@ -682,7 +702,7 @@ export default class ClipmanExtension extends Extension {
             const text = new TextDecoder().decode(data);
             if (text)
                 this._sendToDaemon('text', text);
-        };
+        });
         source.read_async(textTypes[0], cancellable, (src, result) => {
             let stream;
             try {
@@ -692,8 +712,8 @@ export default class ClipmanExtension extends Extension {
                 done(null);
                 return;
             }
-            this._readChunks(stream, cancellable,
-                Gio.MemoryOutputStream.new_resizable(), done);
+            _guard('clipboard read', () => this._readChunks(stream, cancellable,
+                Gio.MemoryOutputStream.new_resizable(), done));
         });
     }
 
@@ -712,11 +732,20 @@ export default class ClipmanExtension extends Extension {
                     console.debug(`clipman: clipboard read failed: ${e.message}`);
                 }
                 const size = bytes ? bytes.get_size() : 0;
-                if (bytes !== null && size > 0 &&
-                    into.get_data_size() + size <= MAX_TEXT_BYTES) {
-                    into.write_bytes(bytes, null);
-                    this._readChunks(src, cancellable, into, done);
-                    return;
+                const over = size > 0 && into.get_data_size() + size > MAX_TEXT_BYTES;
+                if (bytes !== null && size > 0 && !over) {
+                    try {
+                        into.write_bytes(bytes, null);
+                        this._readChunks(src, cancellable, into, done);
+                        return;
+                    } catch (e) {
+                        console.warn(`clipman: clipboard read failed: ${e.message}`);
+                        bytes = null;
+                    }
+                }
+                if (over) {
+                    // Never the content: only that a clip was too big.
+                    console.log(`clipman: a copied text over ${MAX_TEXT_BYTES} bytes was not recorded`);
                 }
                 try {
                     src.close(null);
@@ -753,7 +782,7 @@ export default class ClipmanExtension extends Extension {
             new GLib.Variant('(ss)', [contentType, content]),
             null,
             Gio.DBusCallFlags.NO_AUTO_START,
-            -1,
+            NEW_ENTRY_TIMEOUT_MS,
             null,
             (connection, result) => {
                 try {

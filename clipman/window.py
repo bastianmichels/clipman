@@ -296,6 +296,23 @@ _SENSITIVE_MASK = "•" * 13
 _IMG_INFO_MISS = object()
 
 
+# A call to the Shell extension that takes longer than this has failed:
+# dbus-python would otherwise wait 25 s, with the popup frozen.
+_EXTENSION_TIMEOUT_S = 2.0
+
+
+class _ShortTimeout:
+    """A dbus.Interface whose method calls time out after
+    _EXTENSION_TIMEOUT_S instead of dbus-python's 25 s."""
+
+    def __init__(self, iface):
+        self._iface = iface
+
+    def __getattr__(self, name):
+        method = getattr(self._iface, name)
+        return lambda *args: method(*args, timeout=_EXTENSION_TIMEOUT_S)
+
+
 class _Preview(Gtk.Picture):
     """An image row's preview: exactly ``height`` logical px tall, as wide
     as the image's aspect ratio asks, and narrower when the row is.
@@ -2103,13 +2120,15 @@ class ClipmanWindow(Adw.ApplicationWindow):
         try:
             import dbus
             bus = dbus.SessionBus()
+            # No introspection round trip: the method names are known.
             proxy = bus.get_object(
                 "org.gnome.Shell.Extensions.clipman",
                 "/org/gnome/Shell/Extensions/clipman",
+                introspect=False,
             )
-            return dbus.Interface(
+            return _ShortTimeout(dbus.Interface(
                 proxy, "org.gnome.Shell.Extensions.clipman"
-            )
+            ))
         except Exception as exc:
             logger.debug("Shell extension unavailable: %s", exc, exc_info=True)
             return None

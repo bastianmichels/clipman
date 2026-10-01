@@ -51,10 +51,22 @@ class TestClipboardMonitor(unittest.TestCase):
         self.assertEqual(self.mock_db.add_entry.call_count, 2)
 
     def test_skips_oversized_text(self):
-        big_text = "x" * (10 * 1024 * 1024 + 1)
-        self.monitor.handle_new_text(big_text)
+        from clipman.clipboard_monitor import MAX_TEXT_SIZE
+
+        self.assertEqual(MAX_TEXT_SIZE, 1024 * 1024)
+        big_text = "x" * (MAX_TEXT_SIZE + 1)
+        with self.assertLogs("clipman.clipboard_monitor", "WARNING") as logs:
+            self.monitor.handle_new_text(big_text)
 
         self.mock_db.add_entry.assert_not_called()
+        # The size is logged, never the content.
+        self.assertNotIn("xxxx", "".join(logs.output))
+
+    def test_keeps_text_at_the_limit(self):
+        from clipman.clipboard_monitor import MAX_TEXT_SIZE
+
+        self.monitor.handle_new_text("x" * MAX_TEXT_SIZE)
+        self.mock_db.add_entry.assert_called_once()
 
     def test_skips_empty_text(self):
         self.monitor.handle_new_text("")
@@ -1057,8 +1069,14 @@ class TestReadLimited(unittest.TestCase):
         endless = ("import sys\n"
                    "while True:\n"
                    "    sys.stdout.buffer.write(b'x' * 65536)\n")
-        self.assertIsNone(self._read(endless))
+        with self.assertLogs("clipman.clipboard_monitor", "WARNING"):
+            self.assertIsNone(self._read(endless))
         self.assertLess(time.monotonic() - start, 4)
+
+    def test_image_limit_is_twenty_megabytes(self):
+        from clipman.clipboard_monitor import MAX_IMAGE_SIZE
+
+        self.assertEqual(MAX_IMAGE_SIZE, 20 * 1024 * 1024)
 
     def test_stops_a_command_that_hangs(self):
         start = time.monotonic()
