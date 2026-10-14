@@ -139,6 +139,8 @@ _TABS = (
     ("all", _("History")),
     ("pinned", _("Pinned")),
     ("snippets", _("Snippets")),
+    # Shown while the Vocalinux tab is on (clipman/vocalinux.py).
+    ("vocalinux", _("Vocalinux")),
 )
 _FILL_BATCH = 60
 
@@ -368,10 +370,12 @@ class ClipmanWindow(Adw.ApplicationWindow):
     ``monitor`` — to mirror the kwargs-only call site in ``app.py``.
     """
 
-    def __init__(self, application, db, monitor):
+    def __init__(self, application, db, monitor, vocalinux=None):
         super().__init__(application=application)
         self.db = db
         self.monitor = monitor
+        # The Vocalinux dictations (a VocalinuxSource), or None.
+        self._vocalinux = vocalinux
         self._search_query = ""
         self._search_debounce_id = 0
         self._active_filter = "all"
@@ -486,6 +490,9 @@ class ClipmanWindow(Adw.ApplicationWindow):
         except Exception:
             logger.debug("StyleManager dark listener failed", exc_info=True)
         self._build_ui()
+        if self._vocalinux is not None:
+            self._vocalinux.listeners.append(self._on_vocalinux_changed)
+        self._update_vocalinux_tab()
 
         # Re-evaluate update banner on startup so cached info isn't lost.
         self.refresh_update_banner()
@@ -964,6 +971,9 @@ class ClipmanWindow(Adw.ApplicationWindow):
         clear_btn.set_valign(Gtk.Align.CENTER)
         clear_btn.connect("clicked", self._on_clear_all)
         footer.append(clear_btn)
+        # Hidden on the Vocalinux tab: it would clear the history, not the
+        # dictations shown there.
+        self._clear_btn = clear_btn
 
         # -- Assemble the ToolbarView -------------------------------------
         # Body (search + filters + list/banner stack) becomes the
@@ -977,12 +987,15 @@ class ClipmanWindow(Adw.ApplicationWindow):
 
     def refresh(self):
         is_snippets = self._active_filter == "snippets"
+        is_dictations = self._active_filter == "vocalinux"
         # Dated sections apply to clipboard history, not the flat snippet list.
         self._sortmodel.set_section_sorter(
             None if is_snippets else self._section_sorter
         )
 
-        if is_snippets:
+        if is_dictations:
+            items = self._dictation_items()
+        elif is_snippets:
             entries = (
                 self.db.search_snippets(self._search_query)
                 if self._search_query
@@ -1017,6 +1030,11 @@ class ClipmanWindow(Adw.ApplicationWindow):
                 state_id = "no-snippets-yet"
             elif self._active_filter == "pinned":
                 state_id = "no-pins-yet"
+            elif is_dictations:
+                state_id = ("no-dictations-yet"
+                            if self._vocalinux is not None
+                            and self._vocalinux.available
+                            else "vocalinux-missing")
             elif self._recording_problem is not None:
                 # Nothing records copies: say why and how to fix it
                 # (mockup first-run / snap-required / clipboard-blocked /
@@ -1072,6 +1090,8 @@ class ClipmanWindow(Adw.ApplicationWindow):
                 "all": self.db.count_entries(),
                 "pinned": self.db.count_entries(pinned_only=True),
                 "snippets": len(self.db.get_snippets()),
+                "vocalinux": (len(self._vocalinux.dictations)
+                              if self._vocalinux is not None else 0),
             }
         except Exception:
             logger.debug("filter count query failed", exc_info=True)
@@ -1582,6 +1602,8 @@ class ClipmanWindow(Adw.ApplicationWindow):
         row._clip_item = item
         if item.kind == "snippet":
             self._bind_snippet_row(row, item.data)
+        elif item.kind == "dictation":
+            self._bind_dictation_row(row, item.data)
         else:
             self._bind_entry_row(row, item.data)
         # What a screen reader says for the row: its title and meta line,
@@ -1591,7 +1613,7 @@ class ClipmanWindow(Adw.ApplicationWindow):
         else:
             label = row._clip_title.get_text().removeprefix("★ ")
         details = row._clip_subtitle.get_text()
-        if item.kind == "entry" and item.data.get("pinned"):
+        if item.kind in ("entry", "dictation") and item.data.get("pinned"):
             details = _("Pinned · {details}").format(details=details)
         list_item.set_accessible_label(label)
         list_item.set_accessible_description(details)
@@ -1602,11 +1624,10 @@ class ClipmanWindow(Adw.ApplicationWindow):
 
     def _compute_bucket(self, item):
         """Return (order, label) for the item's dated section."""
-        if item.kind != "entry":
+        if item.kind not in ("entry", "dictation"):
             return (0, "")
-        entry = item.data
         try:
-            d = datetime.fromtimestamp(entry.get("accessed_at") or 0).date()
+            d = datetime.fromtimestamp(self._sort_ts(item)).date()
         except (OSError, OverflowError, ValueError):
             return (4, _("Older"))
         today = date.today()
@@ -1631,6 +1652,8 @@ class ClipmanWindow(Adw.ApplicationWindow):
     def _sort_ts(item):
         if item.kind == "entry":
             return item.data.get("accessed_at") or 0
+        if item.kind == "dictation":
+            return item.data.get("ts") or 0
         return 0
 
     def _sort_cmp(self, a, b, _u):
@@ -1746,6 +1769,7 @@ class ClipmanWindow(Adw.ApplicationWindow):
         )
         row._clip_pin.set_tooltip_text(_("Unpin") if pinned else _("Pin"))
         row._clip_actions.set_visible(True)
+        row._clip_del.set_visible(True)
         # Pinned rows keep their actions visible + a gold edge tint; others
         # fade actions in on hover.
         if pinned:
@@ -1812,6 +1836,119 @@ class ClipmanWindow(Adw.ApplicationWindow):
         row._clip_actions.set_visible(False)
         row.remove_css_class("pinned")
 
+    # ------------------------------------------------------------------
+    # Vocalinux tab (clipman/vocalinux.py)
+    # ------------------------------------------------------------------
+
+    def _vocalinux_on(self):
+        return self._vocalinux is not None and self._vocalinux.enabled
+
+    def _update_vocalinux_tab(self):
+        """Show the Vocalinux tab while it is on; leave it if it goes."""
+        on = self._vocalinux_on()
+        self._filter_buttons["vocalinux"].set_visible(on)
+        if not on and self._active_filter == "vocalinux":
+            self.select_tab("all")
+        else:
+            self._update_filter_counts()
+
+    def _on_vocalinux_changed(self):
+        """New dictations, or a dictation's copy left the history."""
+        if self.get_visible():
+            self.refresh()
+        else:
+            self._update_filter_counts()
+
+    def _dictation_items(self):
+        """The dictations as list items, matched against the search."""
+        if not self._vocalinux_on():
+            return []
+        query = self._search_query.casefold()
+        try:
+            pinned = {e.get("content_text")
+                      for e in self.db.get_entries(limit=-1, pinned_only=True)}
+        except Exception:
+            logger.debug("pinned query failed", exc_info=True)
+            pinned = set()
+        items = []
+        for dictation in self._vocalinux.dictations:
+            if query and query not in dictation["text"].casefold():
+                continue
+            items.append(ClipItem(
+                dict(dictation, pinned=dictation["text"] in pinned),
+                "dictation"))
+        return items
+
+    def _bind_dictation_row(self, row, dictation):
+        row._clip_title.remove_css_class("masked")
+        row._clip_subtitle.remove_css_class("warning")
+        title = _preview_text(dictation["text"], self._preview_lines) \
+            or _("(empty)")
+        pinned = bool(dictation.get("pinned"))
+        if pinned:
+            row._clip_title.set_markup(
+                f'<span foreground="{self._gold_hex()}">★</span> '
+                + GLib.markup_escape_text(title)
+            )
+        else:
+            row._clip_title.set_text(title)
+        row._clip_title.set_lines(self._preview_lines)
+        # Meta line: the local time it was dictated, and how long it took.
+        meta = []
+        if dictation.get("ts") is not None:
+            try:
+                meta.append(datetime.fromtimestamp(dictation["ts"])
+                            .strftime("%H:%M"))
+            except (OSError, OverflowError, ValueError):
+                pass
+        if dictation.get("duration") is not None:
+            meta.append(_("{n} s").format(n=f"{dictation['duration']:.1f}"))
+        row._clip_subtitle.set_text(" · ".join(meta) or _("Dictation"))
+        row._clip_thumb.set_paintable(None)
+        row._clip_thumb.set_visible(False)
+        self._set_tile(row, "text")
+        row._clip_icon.set_from_icon_name("audio-input-microphone-symbolic")
+        row._clip_tile.set_valign(Gtk.Align.CENTER)
+        row._clip_pin.set_icon_name(
+            "starred-symbolic" if pinned else "non-starred-symbolic")
+        row._clip_pin.set_tooltip_text(
+            _("Unpin") if pinned else _("Pin (copies it to Pinned)"))
+        row._clip_actions.set_visible(True)
+        # Vocalinux owns its history: nothing to delete here.
+        row._clip_del.set_visible(False)
+        if pinned:
+            row.add_css_class("pinned")
+        else:
+            row.remove_css_class("pinned")
+
+    def _paste_dictation(self, dictation):
+        text = dictation.get("text") or ""
+        if not text:
+            return
+        self._copy_to_clipboard(text)
+        self.set_visible(False)
+        self._dispatch_paste()
+
+    def _pin_dictation(self, dictation):
+        """Pin a copy of the dictation (it then shows in Pinned), or unpin
+        that copy again."""
+        text = dictation.get("text") or ""
+        if not text:
+            return
+        try:
+            entry = self.db.find_text_entry(text)
+            if entry is None:
+                from clipman.sensitive import is_sensitive
+                entry_id = self.db.add_entry(
+                    "text", content_text=text, sensitive=is_sensitive(text))
+            else:
+                entry_id = entry["id"]
+            if entry_id and entry_id > 0:
+                self.db.toggle_pin(entry_id)
+        except Exception:
+            logger.warning("Pinning a dictation failed", exc_info=True)
+        self.refresh()
+
     def _set_tile(self, row, rtype):
         """Show the coloured type tile for ``rtype`` (text/link/code/image/
         snip): swap its type CSS class and icon."""
@@ -1826,7 +1963,9 @@ class ClipmanWindow(Adw.ApplicationWindow):
 
     def _lv_pin_clicked(self, button, row):
         item = row._clip_item
-        if item is not None and item.kind == "entry":
+        if item is not None and item.kind == "dictation":
+            self._pin_dictation(item.data)
+        elif item is not None and item.kind == "entry":
             entry_id = item.data.get("id")
             if entry_id:
                 self._on_pin_clicked(button, entry_id)
@@ -2208,6 +2347,7 @@ class ClipmanWindow(Adw.ApplicationWindow):
                 btn.add_css_class("filter-tab-active")
         self._active_filter = filter_id
         self._new_snippet_btn.set_visible(filter_id == "snippets")
+        self._clear_btn.set_visible(filter_id != "vocalinux")
         self.refresh()
 
     def _on_snippets_clicked(self, _button, new=False):
@@ -2227,6 +2367,8 @@ class ClipmanWindow(Adw.ApplicationWindow):
             return
         if item.kind == "snippet":
             self._paste_snippet(item.data)
+        elif item.kind == "dictation":
+            self._paste_dictation(item.data)
         elif item.kind == "entry":
             self._paste_entry(item.data)
 
@@ -2358,6 +2500,11 @@ class ClipmanWindow(Adw.ApplicationWindow):
                 "false", "0", ""
             )
             self._update_filter_counts()
+        elif key == "vocalinux_enabled":
+            if self._vocalinux is not None:
+                self._vocalinux.set_enabled(
+                    str(value).strip().lower() not in ("false", "0", ""))
+            self._update_vocalinux_tab()
         elif key == "accent_color":
             self._accent_color = value or "default"
             self._apply_css()
@@ -2425,7 +2572,8 @@ class ClipmanWindow(Adw.ApplicationWindow):
 
     def select_tab(self, tab_id=None, step=0):
         """Switch to ``tab_id``, or move ``step`` tabs from the current one."""
-        ids = [fid for fid, _label in _TABS]
+        ids = [fid for fid, _label in _TABS
+               if self._filter_buttons[fid].get_visible()]
         if tab_id is None:
             current = ids.index(self._active_filter) if self._active_filter in ids else 0
             tab_id = ids[(current + step) % len(ids)]
@@ -2541,6 +2689,8 @@ class ClipmanWindow(Adw.ApplicationWindow):
             return False
         if item.kind == "snippet":
             self._paste_snippet(item.data)
+        elif item.kind == "dictation":
+            self._paste_dictation(item.data)
         elif item.kind == "entry":
             self._paste_entry(item.data)
         else:
@@ -2572,6 +2722,9 @@ class ClipmanWindow(Adw.ApplicationWindow):
         state was toggled.
         """
         item = self._selected_item(fallback_to_first=False)
+        if item is not None and item.kind == "dictation":
+            self._pin_dictation(item.data)
+            return True
         if item is None or item.kind != "entry":
             return False
         entry_id = item.data.get("id")

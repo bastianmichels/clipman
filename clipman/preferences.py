@@ -23,7 +23,8 @@ categories of message:
    Today's keys: ``theme``, ``font_color``, ``opacity``, ``font_size``,
    ``show_count_badges``, ``incognito_on_launch``, ``sensitive_timeout``,
    ``paste_mode``, ``max_entries``, ``thumbnail_height``,
-   ``preview_lines``. Listeners hot-reload CSS / theme / paste
+   ``preview_lines``, ``vocalinux_enabled``, ``vocalinux_window``.
+   Listeners hot-reload CSS / theme / paste
    behaviour off these.
 
 2. Synthetic UI events — ``key`` is one of the strings in
@@ -50,6 +51,7 @@ import clipman.keybindings as keybindings
 import clipman.placement as placement
 import clipman.thumbnails as thumbnails
 import clipman.updates as updates
+import clipman.vocalinux as vocalinux
 from clipman._version import __version__
 from clipman import database
 
@@ -535,6 +537,7 @@ class ClipmanPreferences(Adw.Window):
         layout_group.add(badges_row)
         page.add(layout_group)
 
+        page.add(self._build_vocalinux_group())
         page.add(self._build_position_group())
 
         return page
@@ -655,6 +658,40 @@ class ClipmanPreferences(Adw.Window):
         page.add(sensitive_group)
 
         return page
+
+    def _build_vocalinux_group(self):
+        """The Vocalinux tab: on or off, and how close in time a
+        clipboard text must be to a dictation to count as its copy."""
+        group = Adw.PreferencesGroup()
+        group.set_title(_("Vocalinux"))
+        group.set_description(
+            _("Dictations get their own tab, and Vocalinux's clipboard "
+              "copies stay out of the history.")
+        )
+        enabled_row = Adw.SwitchRow()
+        enabled_row.set_title(_("Vocalinux tab"))
+        enabled_row.set_active(self._get_bool("vocalinux_enabled", True))
+        enabled_row.connect(
+            "notify::active",
+            lambda r, _p: self._save("vocalinux_enabled", r.get_active()),
+        )
+        group.add(enabled_row)
+        self._vocalinux_row = enabled_row
+
+        low, high = vocalinux.WINDOW_RANGE
+        window_row = Adw.SpinRow.new_with_range(low, high, 1)
+        window_row.set_title(_("Time window"))
+        window_row.set_subtitle(
+            _("Seconds a copied text may be from its dictation."))
+        window_row.set_value(max(low, min(high, self._get_int(
+            "vocalinux_window", vocalinux.DEFAULT_WINDOW))))
+        window_row.connect(
+            "notify::value",
+            lambda r, _p: self._save("vocalinux_window", int(r.get_value())),
+        )
+        group.add(window_row)
+        self._vocalinux_window_row = window_row
+        return group
 
     def _build_position_group(self):
         """Where the popup opens: near the pointer (with the offset the

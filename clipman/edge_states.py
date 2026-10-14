@@ -122,6 +122,23 @@ STATES: dict[str, StateSpec] = {
         body=_("Pin a clip with its star, or select it and press P. Pinned "
                "clips stay until you unpin them."),
     ),
+    "vocalinux-missing": StateSpec(
+        id="vocalinux-missing",
+        kind="statuspage",
+        tone="info",
+        icon_name="audio-input-microphone-symbolic",
+        title=_("No Vocalinux history found"),
+        body=_("In Vocalinux, turn on Application → Transcription History "
+               "→ “Keep on Disk”. Your dictations then show up here."),
+    ),
+    "no-dictations-yet": StateSpec(
+        id="no-dictations-yet",
+        kind="statuspage",
+        tone="info",
+        icon_name="audio-input-microphone-symbolic",
+        title=_("No dictations yet"),
+        body=_("Text you dictate with Vocalinux shows up here."),
+    ),
     "no-image-search": StateSpec(
         id="no-image-search",
         kind="statuspage",

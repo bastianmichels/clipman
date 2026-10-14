@@ -52,6 +52,19 @@ the single anonymous HTTPS request, and a short-lived
 reads an image off the clipboard. Both hand their results back to the
 main loop, so no GTK or D-Bus state is touched off-thread.
 
+### Vocalinux dictations (fork)
+
+`clipman/vocalinux.py` reads the transcription history the dictation
+app Vocalinux keeps in `~/.local/share/vocalinux/history.jsonl` and
+feeds the popup's Vocalinux tab. Vocalinux rewrites the file
+atomically (temporary file + `os.replace`), so a `Gio.FileMonitor`
+watches the folder, not the file's inode; a 30 s stat check backs it
+up. The clipboard monitor asks it (`text_filter`) whether a new text
+is a dictation from the last seconds and then does not record it; a
+text that arrived before the file was written is taken out of the
+history again when its dictation appears (`on_text_stored`). Any error
+there is logged and the text is recorded as usual.
+
 ### Extension
 
 The GNOME Shell extension under `extension/` is an ES module that

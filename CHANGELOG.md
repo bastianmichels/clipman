@@ -4,6 +4,20 @@ All notable changes to Clipman are documented in this file.
 
 ## [Unreleased]
 
+### Added — Vocalinux tab (fork)
+
+- A Vocalinux tab lists the dictations Vocalinux keeps in
+  `~/.local/share/vocalinux/history.jsonl` (with "Keep on Disk" on),
+  newest first, with the local time and duration of each. Click pastes;
+  the star pins a copy into Pinned. Without the file the tab says how to
+  turn it on. "Clear all" is hidden there: it would clear the history.
+- A clipboard text that equals (whitespace normalised) a dictation from
+  the last 15 s is not recorded in the history. When the copy arrives
+  before Vocalinux has written its file, the entry is taken out of the
+  history again once the dictation shows up (within 3 s).
+- Preferences → Appearance → Vocalinux: turn the tab on or off, and
+  set the time window (1–120 s).
+
 ### Changed — cache and stability hardening (fork)
 
 - Size limits: text clips up to 1 MB (was 10 MB; the extension reads

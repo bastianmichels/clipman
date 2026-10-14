@@ -169,6 +169,11 @@ class ClipboardMonitor:
         self.on_watcher_dead = None
         # Optional: invoked with the new state when incognito changes.
         self.on_incognito_changed = None
+        # Optional: text_filter(text) returns True for a text that is not
+        # recorded (a Vocalinux dictation); on_text_stored(entry_id, text)
+        # hears of each text that was.
+        self.text_filter = None
+        self.on_text_stored = None
         # The image read blocks on wl-paste, so it leaves the main loop.
         # Tests replace these two with direct calls.
         self._run_in_background = _run_in_thread
@@ -261,10 +266,30 @@ class ClipboardMonitor:
                            MAX_TEXT_SIZE)
             return
 
+        if self._filtered_out(text):
+            return
+
         sensitive = _is_sensitive(text)
-        self.db.add_entry("text", content_text=text, sensitive=sensitive)
+        entry_id = self.db.add_entry("text", content_text=text,
+                                     sensitive=sensitive)
+        if self.on_text_stored is not None:
+            try:
+                self.on_text_stored(entry_id, text)
+            except Exception:
+                logger.warning("on_text_stored callback failed", exc_info=True)
         if self.on_new_entry:
             self.on_new_entry()
+
+    def _filtered_out(self, text):
+        """Whether ``text_filter`` drops ``text``. A failing filter
+        drops nothing."""
+        if self.text_filter is None:
+            return False
+        try:
+            return bool(self.text_filter(text))
+        except Exception:
+            logger.warning("text_filter failed", exc_info=True)
+            return False
 
     def handle_new_image(self):
         """Called from D-Bus when an image was copied."""

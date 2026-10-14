@@ -164,7 +164,8 @@ class TestEdgeStates(_WidgetTestCase):
         "extension-missing", "backup-failed", "restore-failed",
         "network-error", "db-locked", "paused", "paste-target-missing",
         "paste-failed", "history-too-large", "clipboard-blocked",
-        "watcher-crashed", "shortcut-failed",
+        "watcher-crashed", "shortcut-failed", "vocalinux-missing",
+        "no-dictations-yet",
     }
 
     def test_state_id_inventory(self):
@@ -176,7 +177,7 @@ class TestEdgeStates(_WidgetTestCase):
         """
         from clipman.edge_states import STATES
         self.assertEqual(set(STATES.keys()), self.EXPECTED_IDS)
-        self.assertEqual(len(STATES), 22)
+        self.assertEqual(len(STATES), 24)
 
     def test_render_each_state_returns_widget(self):
         from clipman.edge_states import STATES, render_edge_state
@@ -2074,6 +2075,150 @@ class TestImagePreviews(_RowTestCase):
         self.assertEqual(thumbnails.clamp_height("10"), 80)
         self.assertEqual(thumbnails.clamp_height(9999), 400)
         self.assertEqual(thumbnails.clamp_height("junk"), thumbnails.DEFAULT_HEIGHT)
+
+
+class TestVocalinuxTab(_RowTestCase):
+    """The Vocalinux tab lists the dictations from history.jsonl."""
+
+    def _source(self, db, lines=None):
+        import json
+        from datetime import datetime, timezone
+
+        from clipman.vocalinux import VocalinuxSource
+
+        tmp = tempfile.mkdtemp(prefix="clipman-vocalinux-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        path = Path(tmp) / "history.jsonl"
+        if lines is not None:
+            path.write_text("\n".join(
+                json.dumps({"id": i, "text": text, "duration": 4.09,
+                            "timestamp": datetime.fromtimestamp(
+                                ts, timezone.utc).isoformat()})
+                for i, (text, ts) in enumerate(lines)))
+        source = VocalinuxSource(db, path)
+        source.start()
+        self.addCleanup(source.stop)
+        return source
+
+    def _window_with(self, db, source):
+        from clipman.window import ClipmanWindow
+
+        app = self._make_app("com.clipman.TestVocalinux")
+        return ClipmanWindow(application=app, db=db, monitor=None,
+                             vocalinux=source)
+
+    def _texts(self, window):
+        return [window._selection.get_item(i).data["text"]
+                for i in range(window._selection.get_n_items())]
+
+    def test_hidden_without_a_source(self):
+        window = self._window(self._make_db())
+        self.assertFalse(window._filter_buttons["vocalinux"].get_visible())
+
+    def test_lists_dictations_newest_first(self):
+        import time
+
+        db = self._make_db()
+        now = time.time()
+        source = self._source(db, [("älter", now - 60), ("neu", now)])
+        window = self._window_with(db, source)
+        self.assertTrue(window._filter_buttons["vocalinux"].get_visible())
+        window.select_tab("vocalinux")
+        self.assertEqual(self._texts(window), ["neu", "älter"])
+        self.assertEqual(window._filter_count_labels["vocalinux"].get_text(),
+                         "2")
+        # History stays as it was.
+        self.assertEqual(window._filter_count_labels["all"].get_text(), "0")
+        from clipman.window import ClipItem
+        list_item = _FakeListItem(window._selection.get_item(0))
+        window._row_setup(None, list_item)
+        window._row_bind(None, list_item)
+        row = list_item.child
+        self.assertIn("4.1 s", row._clip_subtitle.get_text())
+        self.assertFalse(row._clip_del.get_visible())
+        self.assertIsInstance(list_item.item, ClipItem)
+
+    def test_search_filters_dictations(self):
+        import time
+
+        db = self._make_db()
+        source = self._source(db, [("Apfel", time.time()),
+                                   ("Birne", time.time())])
+        window = self._window_with(db, source)
+        window.select_tab("vocalinux")
+        window._search_query = "apf"
+        window.refresh()
+        self.assertEqual(self._texts(window), ["Apfel"])
+
+    def test_missing_file_explains_keep_on_disk(self):
+        db = self._make_db()
+        window = self._window_with(db, self._source(db))
+        window._show_edge_state = MagicMock()
+        window.select_tab("vocalinux")
+        window._show_edge_state.assert_called_with("vocalinux-missing")
+
+    def test_empty_file_says_no_dictations(self):
+        db = self._make_db()
+        window = self._window_with(db, self._source(db, []))
+        window._show_edge_state = MagicMock()
+        window.select_tab("vocalinux")
+        window._show_edge_state.assert_called_with("no-dictations-yet")
+
+    def test_pin_copies_into_pinned_and_back(self):
+        import time
+
+        db = self._make_db()
+        window = self._window_with(
+            db, self._source(db, [("Merk dir das", time.time())]))
+        window.select_tab("vocalinux")
+        window._selection.set_selected(0)
+        self.assertTrue(window._pin_selected())
+        pins = db.get_entries(pinned_only=True)
+        self.assertEqual([p["content_text"] for p in pins], ["Merk dir das"])
+        self.assertTrue(window._selection.get_item(0).data["pinned"])
+        window._selection.set_selected(0)
+        window._pin_selected()
+        self.assertEqual(db.get_entries(pinned_only=True), [])
+
+    def test_switching_off_hides_the_tab(self):
+        import time
+
+        db = self._make_db()
+        window = self._window_with(
+            db, self._source(db, [("Diktat", time.time())]))
+        window.select_tab("vocalinux")
+        db.set_setting("vocalinux_enabled", "false")
+        window._on_setting_changed("vocalinux_enabled", False)
+        self.assertFalse(window._filter_buttons["vocalinux"].get_visible())
+        self.assertEqual(window._active_filter, "all")
+        db.set_setting("vocalinux_enabled", "true")
+        window._on_setting_changed("vocalinux_enabled", True)
+        self.assertTrue(window._filter_buttons["vocalinux"].get_visible())
+
+    def test_clear_all_is_hidden_on_the_tab(self):
+        """Clear all empties the history, so it does not show where the
+        dictations are listed."""
+        db = self._make_db()
+        window = self._window_with(db, self._source(db, []))
+        self.assertTrue(window._clear_btn.get_visible())
+        window.select_tab("vocalinux")
+        self.assertFalse(window._clear_btn.get_visible())
+        window.select_tab("pinned")
+        self.assertTrue(window._clear_btn.get_visible())
+        window.select_tab("vocalinux")
+        db.set_setting("vocalinux_enabled", "false")
+        window._on_setting_changed("vocalinux_enabled", False)
+        self.assertEqual(window._active_filter, "all")
+        self.assertTrue(window._clear_btn.get_visible())
+
+    def test_ctrl_tab_reaches_the_tab(self):
+        db = self._make_db()
+        window = self._window_with(db, self._source(db, []))
+        ids = []
+        for _ in range(4):
+            window.select_tab(step=1)
+            ids.append(window._active_filter)
+        self.assertEqual(ids, ["pinned", "snippets", "vocalinux", "all"])
 
 
 class TestPreviewLines(_RowTestCase):

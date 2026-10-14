@@ -28,6 +28,7 @@ from clipman.clipboard_monitor import ClipboardMonitor
 from clipman.window import ClipmanWindow
 from clipman.dbus_service import ClipmanDBusService
 import clipman.shell_bridge as shell_bridge
+from clipman.vocalinux import VocalinuxSource
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class ClipmanApp(Adw.Application):
         self.monitor = None
         self.window = None
         self.dbus_service = None
+        self.vocalinux = None
         # Why nothing records copies (an edge state id), or None.
         self._recording_problem = None
         self._watcher_dead = False
@@ -104,6 +106,21 @@ class ClipmanApp(Adw.Application):
             set_aside_damaged()
             return ClipboardDB()
 
+    def _start_vocalinux(self):
+        """Dictations from Vocalinux get their own tab, and its clipboard
+        copies stay out of the history. Clipman runs on without it."""
+        try:
+            source = VocalinuxSource(self.db)
+            self.monitor.text_filter = source.matches_recent
+            self.monitor.on_text_stored = source.note_text_stored
+            source.start()
+            return source
+        except Exception:
+            logger.warning("The Vocalinux tab could not start", exc_info=True)
+            self.monitor.text_filter = None
+            self.monitor.on_text_stored = None
+            return None
+
     def _fail(self):
         """Quit with a non-zero exit status: start-up failed."""
         self.exit_status = 1
@@ -126,10 +143,12 @@ class ClipmanApp(Adw.Application):
         # Surface repeated wl-paste crashes in the popup instead of dying
         # silently (mockup watcher-crashed).
         self.monitor.on_watcher_dead = self._on_watcher_dead
+        self.vocalinux = self._start_vocalinux()
         # Phase 1 of the GTK 4 + libadwaita port: keyword args only, the
         # window constructor expects (application, db, monitor) now.
         self.window = ClipmanWindow(
-            application=self, db=self.db, monitor=self.monitor
+            application=self, db=self.db, monitor=self.monitor,
+            vocalinux=self.vocalinux,
         )
 
         # Apply the persisted start-in-incognito preference. Driven through
@@ -390,6 +409,8 @@ class ClipmanApp(Adw.Application):
     def _shutdown(self):
         if self.monitor:
             self.monitor.stop()
+        if self.vocalinux:
+            self.vocalinux.stop()
         if self.db:
             self.db.close()
         self.quit()

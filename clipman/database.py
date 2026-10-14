@@ -437,6 +437,21 @@ class ClipboardDB:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_entry(self, entry_id: int):
+        """The entry with ``entry_id`` as a dict, or None."""
+        row = self.conn.execute(
+            "SELECT * FROM entries WHERE id = ?", (entry_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def find_text_entry(self, text: str):
+        """The entry holding exactly ``text``, or None."""
+        row = self.conn.execute(
+            "SELECT * FROM entries WHERE content_hash = ?",
+            (content_hash(text.encode("utf-8")),)
+        ).fetchone()
+        return dict(row) if row else None
+
     def update_accessed(self, entry_id: int):
         self.conn.execute(
             "UPDATE entries SET accessed_at = ? WHERE id = ?",
