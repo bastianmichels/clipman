@@ -97,6 +97,33 @@ All notable changes to Clipman are documented in this file.
   manager's Shell extension is installed and enabled. It names the
   culprit and prints the command to fix it, but changes nothing itself.
 
+## [1.3.0] - 2026-10-12
+
+A large reliability release, built on a full audit of the app, the
+GNOME Shell extension, packaging, CI and the docs, with fixes from two
+outside contributors, Thomas Roder and jendermine. The PyPI package
+starts again (1.2.1 could not). The extension (version 9) supports
+GNOME Shell 51, and incognito now pauses it too. Restoring a backup can
+no longer lose the history, the secret detector no longer deletes
+ordinary clips, and screen readers get names for the popup's controls
+and clip rows. The snap now uses the GNOME runtime instead of shipping
+its own GTK.
+
+### Fixed — fallback clipboard watcher could pin a CPU core
+
+- A broken `wl-paste --watch` pipe left the GLib IO watch alive (read
+  errors returned `SOURCE_CONTINUE`, `NVAL` was never watched), so the
+  callback re-ran in a tight loop at 100% of one core. A dead pipe now
+  drops the watch and goes through the existing bounded restart.
+
+### Added — contributors in the README
+
+- The README has a Contributors section that lists everyone whose pull
+  request was merged, with their name, avatar and links to those pull
+  requests. `scripts/contributors.py` builds it from the GitHub API and
+  never lists the maintainer, bots or AI tools. CONTRIBUTING.md explains
+  who is listed and how to opt out.
+
 ### Added — GNOME Shell 51 support
 
 - The Shell extension (v9) now declares support for GNOME Shell 51. The

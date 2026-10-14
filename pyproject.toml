@@ -1,6 +1,6 @@
 [project]
 name = "clipman-clipboard"
-version = "1.2.1"
+version = "1.3.0"
 description = "A clipboard history manager for GNOME on Wayland, built with GTK 4 and libadwaita"
 readme = "README.md"
 license = "Apache-2.0"
@@ -36,7 +36,7 @@ Donate = "https://www.paypal.com/paypalme/mohammedelsayedammar"
 clipman = "clipman.cli:main"
 
 [project.optional-dependencies]
-lint = ["ruff==0.16.8"]
+lint = ["ruff==0.16.10"]
 # PyGObject cap: CI builds it from source against noble's GLib 2.80; bump deliberately.
 test = ["pytest==9.1.1", "PyGObject>=3.46,<3.59", "dbus-python>=1.3"]
 dev = ["clipman-clipboard[lint,test]"]
